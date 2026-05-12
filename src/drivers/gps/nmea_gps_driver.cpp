@@ -155,6 +155,11 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
         default: gps_state_.fix_type = GpsState::NO_FIX; break;
       }
 
+      // PDOP is optional in GSA. minmea sets scale=0 when the field is empty.
+      if (gsa.pdop.scale != 0) {
+        gps_state_.pdop = static_cast<float>(minmea_tofloat(&gsa.pdop));
+      }
+
       UpdateGpsStateValidity();
       TriggerStateCallback();
       return true;

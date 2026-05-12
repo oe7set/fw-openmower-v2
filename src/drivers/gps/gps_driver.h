@@ -55,6 +55,8 @@ class GpsDriver : public DebuggableDriver {
 
     // Number of satellites used in solution
     uint8_t num_sv;
+    // Position dilution of precision (unitless). 0 means "not reported".
+    float pdop;
   };
 
   enum Level { VERBOSE, INFO, WARN, ERROR };

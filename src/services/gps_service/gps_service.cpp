@@ -93,6 +93,8 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
     double vehicle_heading[2] = {state.vehicle_heading, state.vehicle_heading_accuracy};
     SendVehicleHeadingAndAccuracy(vehicle_heading, 2);
   }
+  SendSatelliteCount(state.num_sv);
+  SendPDOP(state.pdop);
   CommitTransaction();
 }
 

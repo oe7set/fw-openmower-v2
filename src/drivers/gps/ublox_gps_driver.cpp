@@ -214,6 +214,8 @@ void UbxGpsDriver::HandleNavPvt(const UbxNavPvt *msg) {
 
   // Number of satellites used in the solution
   gps_state_.num_sv = msg->numSV;
+  // u-blox reports pDOP as 1e-2 fixed-point.
+  gps_state_.pdop = msg->pDOP / 100.0f;
 
   double headAcc = (msg->headAcc / 100000.0) * (M_PI / 180.0);
 
