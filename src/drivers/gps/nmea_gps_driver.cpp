@@ -1,5 +1,8 @@
 #include "nmea_gps_driver.h"
 
+#include <cmath>
+#include <cstring>
+
 #include "minmea.h"
 
 namespace xbot::driver::gps {
@@ -120,8 +123,21 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       gps_state_.vel_e = sin(angle_rad) * speed;
       gps_state_.vel_n = cos(angle_rad) * speed;
       gps_state_.vel_u = 0;
-      gps_state_.motion_heading_valid = true;
-      gps_state_.vehicle_heading_valid = false;
+
+      // Compute motion heading from RMC course (same transform as UBX driver)
+      if (speed > 0.1) {
+        double course_deg = minmea_tofloat(&rmc.course);
+        double motion_heading = -course_deg * (M_PI / 180.0) + M_PI_2;
+        motion_heading = fmod(motion_heading, 2.0 * M_PI);
+        while (motion_heading < 0) {
+          motion_heading += 2.0 * M_PI;
+        }
+        gps_state_.motion_heading = motion_heading;
+        gps_state_.motion_heading_valid = true;
+      } else {
+        gps_state_.motion_heading_valid = false;
+      }
+      gps_state_.motion_heading_accuracy = 0;
 
       TriggerStateCallback();
       return true;
@@ -166,9 +182,50 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       return false;
 
     default:
-      // Correct syntax, but we're not interested in this type.
+      // Valid syntax but not handled by minmea, try custom parsers
+      ParseHDT(line);
       return true;
   }
+}
+
+bool NmeaGpsDriver::ParseHDT(const char *line) {
+  char type[6] = {};
+  struct minmea_float heading = {};
+  char t_indicator = 0;
+
+  if (!minmea_scan(line, "tfc", type, &heading, &t_indicator)) {
+    return false;
+  }
+
+  // Check sentence type (skip 2-char talker ID, e.g. "GP" or "GN")
+  if (strncmp(type + 2, "HDT", 3) != 0) {
+    return false;
+  }
+  if (t_indicator != 'T') {
+    return false;
+  }
+  if (heading.scale == 0) {
+    // Empty heading field
+    return false;
+  }
+
+  // Convert heading from degrees CW from True North to firmware coordinate system
+  // Same transformation as UBX driver: negate, convert to radians, add PI/2
+  double heading_deg = minmea_tofloat(&heading);
+  double heading_rad = -heading_deg * (M_PI / 180.0) + M_PI_2;
+  heading_rad = fmod(heading_rad, 2.0 * M_PI);
+  while (heading_rad < 0) {
+    heading_rad += 2.0 * M_PI;
+  }
+
+  gps_state_.vehicle_heading = heading_rad;
+  gps_state_.vehicle_heading_valid = true;
+  // HDT does not carry an accuracy figure. Use a small but non-zero sentinel
+  // (~0.57 deg) so downstream EKF stages do not treat the heading as perfect.
+  gps_state_.vehicle_heading_accuracy = 0.01;
+
+  TriggerStateCallback();
+  return true;
 }
 
 void NmeaGpsDriver::ResetParserState() {

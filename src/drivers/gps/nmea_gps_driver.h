@@ -22,6 +22,7 @@ class NmeaGpsDriver : public GpsDriver {
   size_t ProcessBytes(const uint8_t* buffer, size_t len) override;
 
   bool ProcessLine(const char* line);
+  bool ParseHDT(const char* line);
   void UpdateGpsStateValidity();
 
   char line[512]{};

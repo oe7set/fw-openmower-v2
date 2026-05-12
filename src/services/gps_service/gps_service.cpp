@@ -85,6 +85,14 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
   }
   double vel[3] = {state.vel_e, state.vel_n, state.vel_u};
   SendMotionVectorENU(vel, 3);
+  if (state.motion_heading_valid) {
+    double motion_heading[2] = {state.motion_heading, state.motion_heading_accuracy};
+    SendMotionHeadingAndAccuracy(motion_heading, 2);
+  }
+  if (state.vehicle_heading_valid) {
+    double vehicle_heading[2] = {state.vehicle_heading, state.vehicle_heading_accuracy};
+    SendVehicleHeadingAndAccuracy(vehicle_heading, 2);
+  }
   CommitTransaction();
 }
 

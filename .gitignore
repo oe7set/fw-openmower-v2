@@ -5,3 +5,7 @@ build/
 out/
 .continue/rules/**
 CMakeUserPresets.json
+
+# ai
+.claude
+CLAUDE.md
