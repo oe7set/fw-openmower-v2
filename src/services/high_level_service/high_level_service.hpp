@@ -69,6 +69,11 @@ class HighLevelService : public HighLevelServiceBase {
 
   etl::delegate<void()> state_changed_callback_{};
 
+  // Once the service has successfully transmitted the firmware version after
+  // being claimed, this stays true and we stop retrying. Reset on OnStop() so
+  // that a re-claim re-sends the version (e.g. after the ROS side restarts).
+  bool firmware_version_sent_ = false;
+
   void OnStateIDChanged(const HighLevelStatus& new_value) override;
   void OnStateNameChanged(const char* new_value, uint32_t length) override;
   void OnSubStateNameChanged(const char* new_value, uint32_t length) override;
@@ -77,6 +82,9 @@ class HighLevelService : public HighLevelServiceBase {
   void OnCurrentPathChanged(const int16_t& new_value) override;
   void OnCurrentPathIndexChanged(const int16_t& new_value) override;
   void OnTransactionEnd() override;
+
+  void OnStop() override;
+  uint32_t OnLoop(uint32_t now_micros, uint32_t last_tick_micros) override;
 };
 
 #endif  // HIGH_LEVEL_SERVICE_HPP
