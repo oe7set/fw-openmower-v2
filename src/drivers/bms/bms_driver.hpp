@@ -49,6 +49,11 @@ struct Data {
   // As standardized battery packs come into service, physical size will have less to do with the actual capacity.
   float battery_soc{};  // 0..1
 
+  // AbsoluteStateOfCharge (SBS 0x0E): charge relative to the pack's *design* capacity rather than its
+  // current full-charge capacity. Comparing this against the relative SoC indicates pack wear, so it is
+  // a useful State-of-Health hint. 0..1, 0 means "unknown / not reported".
+  float absolute_soc{};  // 0..1
+
   // remaining_capacity_ah returns the battery's remaining capacity in absolute terms but relative to
   // a specific discharge rate. This information is a numeric indication of remaining charge which can also be
   // represented by the battery_soc and may be in a better form for use by power management systems.

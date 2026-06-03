@@ -193,6 +193,16 @@ void SaboBmsDriver::Tick() {
     data_.battery_soc = soc;
   }
 
+  // Absolute SoC (0x0E) word: percent relative to design capacity. Charge against the *design* capacity
+  // instead of the current full-charge capacity; comparing it to the relative SoC reveals pack wear (SoH).
+  if (ReadRegister(0x0E, u16) == MSG_OK) {
+    float abs_soc = (float)u16 / 100.0f;
+    if (abs_soc < 0.0f) abs_soc = 0.0f;
+    // AbsoluteStateOfCharge can legitimately exceed 100% on a fresh pack whose real capacity is above design,
+    // so it is intentionally not clamped to 1.0 here.
+    data_.absolute_soc = abs_soc;
+  }
+
   // RemainingCapacity (0x0F) word: mAh
   if (ReadRegister(0x0F, u16) == MSG_OK && u16 > 0U) {
     data_.remaining_capacity_ah = (float)u16 / 1000.0f;
@@ -279,6 +289,9 @@ const char* SaboBmsDriver::GetExtraDataJson() const {
   chars += chsnprintf(json_buf + chars, sizeof(json_buf) - chars,
                       ",\"serial_number\":%u,\"design_capacity_ah\":%.3f,\"design_voltage_v\":%.3f",
                       (unsigned)data_.serial_number, (double)data_.design_capacity_ah, (double)data_.design_voltage_v);
+
+  // Absolute SoC (relative to design capacity) — a State-of-Health hint when compared to the relative SoC.
+  chars += chsnprintf(json_buf + chars, sizeof(json_buf) - chars, ",\"absolute_soc\":%.3f", (double)data_.absolute_soc);
 
   // Status
   chars += chsnprintf(json_buf + chars, sizeof(json_buf) - chars, ",\"status\":%u", battery_status_);
