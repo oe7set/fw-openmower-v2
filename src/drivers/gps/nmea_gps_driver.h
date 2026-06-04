@@ -12,8 +12,15 @@ class NmeaGpsDriver : public GpsDriver {
     return ProtocolType::NMEA;
   }
 
+  // Enable/disable pushing the Unicore detail-log configuration to the receiver
+  // at startup. Mirrors the EnableGnssDetail service register. Default on.
+  void SetGnssDetailEnabled(bool enabled) {
+    gnss_detail_enabled_ = enabled;
+  }
+
  protected:
   void ResetParserState() override;
+  void OnDriverStarted() override;
 
  private:
   /**
@@ -23,12 +30,16 @@ class NmeaGpsDriver : public GpsDriver {
 
   bool ProcessLine(const char* line);
   bool ParseHDT(const char* line);
+  // Dispatch a Unicore proprietary ASCII frame (#PVTSLNA/#BESTNAVA/#GNHPR).
+  bool ProcessUnicoreLine(const char* line);
   void UpdateGpsStateValidity();
 
   // Accumulate GSV satellite rows across all constellations of one epoch.
   void ProcessGsv(const char* line);
   // Publish the accumulated GSV rows (called once per epoch, from GGA).
   void CommitGsv();
+  // Record the used-in-solution PRNs from a GSA sentence for this epoch.
+  void AccumulateGsaUsed(const char* line, const int* sats);
 
   char line[512]{};
   size_t line_len = 0;
@@ -38,6 +49,17 @@ class NmeaGpsDriver : public GpsDriver {
   // Scratch buffer for the in-progress epoch's GSV satellites.
   GpsState::SatInfo gsv_scratch_[GpsState::MAX_SATS]{};
   uint8_t gsv_fill_ = 0;
+
+  // Used-in-solution (gnss_id, sv_id) pairs accumulated from GSA this epoch,
+  // applied to the published sats in CommitGsv().
+  struct UsedSat {
+    uint8_t gnss_id;
+    uint8_t sv_id;
+  };
+  UsedSat gsa_used_[GpsState::MAX_SATS]{};
+  uint8_t gsa_used_fill_ = 0;
+
+  bool gnss_detail_enabled_ = true;
 };
 }  // namespace xbot::driver::gps
 

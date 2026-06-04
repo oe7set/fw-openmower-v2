@@ -95,6 +95,26 @@ class GpsDriver : public DebuggableDriver {
 
     // Detailed dilution of precision. 0 means "not reported".
     float gdop, hdop, vdop, tdop;
+
+    // Age of the applied RTCM/differential corrections in seconds.
+    // -1 means "not reported".
+    float diff_age = -1;
+    // Dual-antenna baseline length in metres (Unicore). 0 means "not reported".
+    float baseline_len = 0;
+    // Refined solution status (Unicore): 0 none, 1 single, 2 DGPS, 3 float,
+    // 4 fixed. 255 means "not reported" (fall back to fix_type/rtk_type).
+    uint8_t solution_status = 255;
+    // Enforced elevation cutoff mask in degrees, as the receiver reports it
+    // (Unicore PVTSLN). -1 means "not reported".
+    float elevation_cutoff = -1;
+    // Per-antenna AGC (Unicore #AGC): ANT1 (master) bands [0..4], ANT2 (slave)
+    // bands [5..9]. -1 = band/channel unused. All zero = "not reported".
+    int8_t antenna_agc[10] = {};
+    bool antenna_agc_valid = false;
+    // Jamming detection (Unicore #JAMSTATUS): [0] CWRatio 0..255 (higher = more
+    // interference), [1] CWFlag (0 none, 1 CW, 2 strong CW). valid flag gates it.
+    uint8_t jamming[2] = {};
+    bool jamming_valid = false;
   };
 
   /**
