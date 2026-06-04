@@ -295,6 +295,15 @@ void NmeaGpsDriver::CommitGsv() {
   // Publish the satellites accumulated since the previous commit and start a
   // fresh accumulation window for the next epoch. Called from the GGA handler,
   // the natural once-per-epoch boundary.
+  //
+  // GGA and the GSV group are not phase-locked: a GGA may arrive in a window
+  // where no GSV sentences were received yet. If we committed unconditionally
+  // we would publish an empty satellite list on those ticks, blanking the
+  // skyplot/signal panels once per second. Only overwrite the published list
+  // when this window actually carried GSV data; otherwise keep the last sky.
+  if (gsv_fill_ == 0) {
+    return;
+  }
   const uint8_t n = gsv_fill_ < GpsState::MAX_SATS ? gsv_fill_ : GpsState::MAX_SATS;
   for (uint8_t i = 0; i < n; i++) {
     gps_state_.sats[i] = gsv_scratch_[i];
