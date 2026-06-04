@@ -59,6 +59,12 @@ class GpsService : public GpsServiceBase {
   // Empty GPS state for fallback when no driver is available
   GpsDriver::GpsState empty_gps_state_{};
 
+  // Scratch buffer for packing the SatelliteData output. Kept as a member (the
+  // service is a global singleton) instead of a stack local, because
+  // GpsStateCallback runs on the GPS driver's small (1 KB) thread stack where a
+  // 512-byte local would overflow and hard-fault the board.
+  uint8_t sat_buf_[512]{};
+
   void GpsStateCallback(const GpsDriver::GpsState& state);
 };
 

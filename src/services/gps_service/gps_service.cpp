@@ -107,23 +107,23 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
 
   // Pack the per-signal satellite detail into a self-describing byte buffer:
   // byte 0 = count, then count * 8-byte records. Kept well within the 512-byte
-  // SatelliteData output (1 + 60*8 = 481).
-  uint8_t sat_buf[512];
+  // SatelliteData output (1 + 60*8 = 481). sat_buf_ is a member (not a stack
+  // local) — this callback runs on the GPS driver's small thread stack.
   uint8_t count = state.sat_count > GpsDriver::GpsState::MAX_SATS ? GpsDriver::GpsState::MAX_SATS : state.sat_count;
-  sat_buf[0] = count;
+  sat_buf_[0] = count;
   size_t off = 1;
   for (uint8_t i = 0; i < count; i++) {
     const auto& s = state.sats[i];
-    sat_buf[off++] = s.gnss_id;
-    sat_buf[off++] = s.sv_id;
-    sat_buf[off++] = s.cn0;
-    sat_buf[off++] = s.band;
-    sat_buf[off++] = static_cast<uint8_t>(s.elevation);
-    sat_buf[off++] = static_cast<uint8_t>(s.azimuth & 0xff);
-    sat_buf[off++] = static_cast<uint8_t>((s.azimuth >> 8) & 0xff);
-    sat_buf[off++] = static_cast<uint8_t>((s.used ? 0x01 : 0x00) | (s.healthy ? 0x02 : 0x00));
+    sat_buf_[off++] = s.gnss_id;
+    sat_buf_[off++] = s.sv_id;
+    sat_buf_[off++] = s.cn0;
+    sat_buf_[off++] = s.band;
+    sat_buf_[off++] = static_cast<uint8_t>(s.elevation);
+    sat_buf_[off++] = static_cast<uint8_t>(s.azimuth & 0xff);
+    sat_buf_[off++] = static_cast<uint8_t>((s.azimuth >> 8) & 0xff);
+    sat_buf_[off++] = static_cast<uint8_t>((s.used ? 0x01 : 0x00) | (s.healthy ? 0x02 : 0x00));
   }
-  SendSatelliteData(sat_buf, off);
+  SendSatelliteData(sat_buf_, off);
 
   CommitTransaction();
 }
