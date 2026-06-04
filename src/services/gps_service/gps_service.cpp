@@ -23,7 +23,11 @@ bool GpsService::LoadAndStartGpsDriver(ProtocolType protocol_type, uint8_t uart,
 
   // Create the requested driver
   if (protocol_type == ProtocolType::UBX) {
-    gps_driver_ = new UbxGpsDriver();
+    auto* ublox_driver = new UbxGpsDriver();
+    // Enable the detailed GNSS messages (NAV-SAT/NAV-SIG/NAV-DOP) unless the
+    // operator opted out via the EnableGnssDetail register.
+    ublox_driver->SetGnssDetailEnabled(EnableGnssDetail.value != 0);
+    gps_driver_ = ublox_driver;
   } else {
     gps_driver_ = new NmeaGpsDriver();
   }
@@ -95,6 +99,32 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
   }
   SendSatelliteCount(state.num_sv);
   SendPDOP(state.pdop);
+
+  // Detailed DOP breakdown: [gdop, hdop, vdop, tdop]. pdop stays on its own
+  // output for backward compatibility.
+  float dop[4] = {state.gdop, state.hdop, state.vdop, state.tdop};
+  SendDOP(dop, 4);
+
+  // Pack the per-signal satellite detail into a self-describing byte buffer:
+  // byte 0 = count, then count * 8-byte records. Kept well within the 512-byte
+  // SatelliteData output (1 + 60*8 = 481).
+  uint8_t sat_buf[512];
+  uint8_t count = state.sat_count > GpsDriver::GpsState::MAX_SATS ? GpsDriver::GpsState::MAX_SATS : state.sat_count;
+  sat_buf[0] = count;
+  size_t off = 1;
+  for (uint8_t i = 0; i < count; i++) {
+    const auto& s = state.sats[i];
+    sat_buf[off++] = s.gnss_id;
+    sat_buf[off++] = s.sv_id;
+    sat_buf[off++] = s.cn0;
+    sat_buf[off++] = s.band;
+    sat_buf[off++] = static_cast<uint8_t>(s.elevation);
+    sat_buf[off++] = static_cast<uint8_t>(s.azimuth & 0xff);
+    sat_buf[off++] = static_cast<uint8_t>((s.azimuth >> 8) & 0xff);
+    sat_buf[off++] = static_cast<uint8_t>((s.used ? 0x01 : 0x00) | (s.healthy ? 0x02 : 0x00));
+  }
+  SendSatelliteData(sat_buf, off);
+
   CommitTransaction();
 }
 

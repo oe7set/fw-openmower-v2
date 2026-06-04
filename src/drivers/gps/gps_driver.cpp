@@ -63,6 +63,10 @@ bool GpsDriver::StartDriver(UARTDriver *uart, uint32_t baudrate) {
 #endif
 
   uartStartReceive(uart, RECV_BUFFER_SIZE, recv_buffer1_);
+
+  // Give protocol drivers a chance to configure the receiver now that the
+  // UART is running (e.g. enable extra UBX messages).
+  OnDriverStarted();
   return true;
 }
 

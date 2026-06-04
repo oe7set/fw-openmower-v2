@@ -25,10 +25,19 @@ class NmeaGpsDriver : public GpsDriver {
   bool ParseHDT(const char* line);
   void UpdateGpsStateValidity();
 
+  // Accumulate GSV satellite rows across all constellations of one epoch.
+  void ProcessGsv(const char* line);
+  // Publish the accumulated GSV rows (called once per epoch, from GGA).
+  void CommitGsv();
+
   char line[512]{};
   size_t line_len = 0;
 
   int fix_quality = 0;
+
+  // Scratch buffer for the in-progress epoch's GSV satellites.
+  GpsState::SatInfo gsv_scratch_[GpsState::MAX_SATS]{};
+  uint8_t gsv_fill_ = 0;
 };
 }  // namespace xbot::driver::gps
 

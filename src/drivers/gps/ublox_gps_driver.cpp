@@ -149,17 +149,38 @@ bool UbxGpsDriver::ValidateChecksum(const uint8_t *packet, size_t size) {
 }
 
 void UbxGpsDriver::ProcessUbxPacket(const uint8_t *data, const size_t &size) {
-  // data = no header bytes (starts with class) and stops before checksum
-
+  // data = no header bytes (starts with class) and stops before checksum.
+  // The payload (without class, id and the 2-byte length) starts at data + 4.
   uint16_t packet_id = data[0] << 8 | data[1];
-  if (packet_id == (UbxNavPvt::CLASS_ID << 8 | UbxNavPvt::MESSAGE_ID)) {
-    // substract class, id and length
-    if (size - 4 == sizeof(UbxNavPvt)) {
-      const auto *msg = reinterpret_cast<const UbxNavPvt *>(data + 4);
-      HandleNavPvt(msg);
-    } else {
-      ULOG_WARNING("size mismatch for PVT message!");
-    }
+  const uint8_t *payload = data + 4;
+  const size_t payload_size = size - 4;
+
+  switch (packet_id) {
+    case (UbxNavPvt::CLASS_ID << 8 | UbxNavPvt::MESSAGE_ID):
+      if (payload_size == sizeof(UbxNavPvt)) {
+        HandleNavPvt(reinterpret_cast<const UbxNavPvt *>(payload));
+      } else {
+        ULOG_WARNING("size mismatch for PVT message!");
+      }
+      break;
+    case (UbxNavSat::CLASS_ID << 8 | UbxNavSat::MESSAGE_ID):
+      // Variable length: header + numSvs * UbxNavSatSv. Validated inside.
+      HandleNavSat(payload, payload_size);
+      break;
+    case (UbxNavSig::CLASS_ID << 8 | UbxNavSig::MESSAGE_ID):
+      // Variable length: header + numSigs * UbxNavSigSig. Validated inside.
+      HandleNavSig(payload, payload_size);
+      break;
+    case (UbxNavDop::CLASS_ID << 8 | UbxNavDop::MESSAGE_ID):
+      if (payload_size == sizeof(UbxNavDop)) {
+        HandleNavDop(reinterpret_cast<const UbxNavDop *>(payload));
+      } else {
+        ULOG_WARNING("size mismatch for DOP message!");
+      }
+      break;
+    default:
+      // unknown message, ignore it
+      break;
   }
 }
 
@@ -249,6 +270,150 @@ void UbxGpsDriver::HandleNavPvt(const UbxNavPvt *msg) {
   gps_state_valid_ = true;
 
   TriggerStateCallback();
+}
+
+void UbxGpsDriver::HandleNavSat(const uint8_t *payload, size_t size) {
+  if (size < sizeof(UbxNavSat)) {
+    ULOG_WARNING("size mismatch for NAV-SAT message!");
+    return;
+  }
+  const auto *header = reinterpret_cast<const UbxNavSat *>(payload);
+  const size_t expected = sizeof(UbxNavSat) + static_cast<size_t>(header->numSvs) * sizeof(UbxNavSatSv);
+  if (size != expected) {
+    ULOG_WARNING("size mismatch for NAV-SAT message!");
+    return;
+  }
+
+  const auto *sv = reinterpret_cast<const UbxNavSatSv *>(payload + sizeof(UbxNavSat));
+  nav_sat_count_ = 0;
+  for (uint8_t i = 0; i < header->numSvs && nav_sat_count_ < GpsState::MAX_SATS; i++) {
+    nav_sat_[nav_sat_count_++] = sv[i];
+  }
+  gps_state_.sats_visible = header->numSvs;
+
+  // When NAV-SIG is unavailable, NAV-SAT alone still gives us a usable sky.
+  RebuildSatelliteState();
+}
+
+void UbxGpsDriver::HandleNavSig(const uint8_t *payload, size_t size) {
+  if (size < sizeof(UbxNavSig)) {
+    ULOG_WARNING("size mismatch for NAV-SIG message!");
+    return;
+  }
+  const auto *header = reinterpret_cast<const UbxNavSig *>(payload);
+  const size_t expected = sizeof(UbxNavSig) + static_cast<size_t>(header->numSigs) * sizeof(UbxNavSigSig);
+  if (size != expected) {
+    ULOG_WARNING("size mismatch for NAV-SIG message!");
+    return;
+  }
+
+  const auto *sig = reinterpret_cast<const UbxNavSigSig *>(payload + sizeof(UbxNavSig));
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < header->numSigs && count < GpsState::MAX_SATS; i++) {
+    const UbxNavSigSig &s = sig[i];
+    GpsState::SatInfo &out = gps_state_.sats[count];
+    out.gnss_id = s.gnssId;
+    out.sv_id = s.svId;
+    out.cn0 = s.cno;
+    out.band = BandFromSignal(s.gnssId, s.sigId);
+    out.used = (s.sigFlags & UbxNavSig::SIGFLAGS_PR_USED) != 0;
+    out.healthy = (s.sigFlags & UbxNavSig::SIGFLAGS_HEALTH_MASK) == UbxNavSig::SIGFLAGS_HEALTH_HEALTHY;
+
+    // Attach sky position from the matching NAV-SAT entry (same gnss/sv).
+    out.elevation = -128;
+    out.azimuth = -1;
+    for (uint8_t j = 0; j < nav_sat_count_; j++) {
+      if (nav_sat_[j].gnssId == s.gnssId && nav_sat_[j].svId == s.svId) {
+        out.elevation = nav_sat_[j].elev;
+        out.azimuth = nav_sat_[j].azim;
+        break;
+      }
+    }
+    count++;
+  }
+  gps_state_.sat_count = count;
+}
+
+void UbxGpsDriver::HandleNavDop(const UbxNavDop *msg) {
+  gps_state_.gdop = msg->gDOP / 100.0f;
+  gps_state_.pdop = msg->pDOP / 100.0f;
+  gps_state_.tdop = msg->tDOP / 100.0f;
+  gps_state_.vdop = msg->vDOP / 100.0f;
+  gps_state_.hdop = msg->hDOP / 100.0f;
+}
+
+void UbxGpsDriver::RebuildSatelliteState() {
+  // NAV-SAT reports one aggregate C/N0 per satellite. This is the fallback
+  // view used when NAV-SIG is not enabled/available; NAV-SIG overwrites it
+  // with true per-band rows when it arrives.
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < nav_sat_count_ && count < GpsState::MAX_SATS; i++) {
+    const UbxNavSatSv &sv = nav_sat_[i];
+    GpsState::SatInfo &out = gps_state_.sats[count];
+    out.gnss_id = sv.gnssId;
+    out.sv_id = sv.svId;
+    out.cn0 = sv.cno;
+    out.band = 0;  // NAV-SAT does not break C/N0 down per band.
+    out.elevation = sv.elev;
+    out.azimuth = sv.azim;
+    out.used = (sv.flags & UbxNavSat::FLAGS_SV_USED) != 0;
+    out.healthy = (sv.flags & UbxNavSat::FLAGS_HEALTH_MASK) == UbxNavSat::FLAGS_HEALTH_HEALTHY;
+    count++;
+  }
+  gps_state_.sat_count = count;
+}
+
+void UbxGpsDriver::ConfigureMessages() {
+  if (!gnss_detail_enabled_) {
+    return;
+  }
+
+  // UBX-CFG-VALSET (0x06 0x8A): enable NAV-SAT, NAV-SIG and NAV-DOP at 1 Hz on
+  // every output port (I2C/UART1/UART2/USB/SPI). Layer = RAM only (0x01) so we
+  // do not wear the receiver's flash on every boot. Keys are the generic
+  // CFG-MSGOUT-UBX_NAV_*_<port> rate items.
+  //
+  // Frame layout: [B5 62][06 8A][len lo hi][version layer res0 res1]
+  //               [{key:u32}{val:u8}]...[ck_a ck_b]
+  static constexpr uint32_t kKeys[] = {
+      // NAV-SAT
+      0x20910016,  // CFG-MSGOUT-UBX_NAV_SAT_I2C
+      0x20910017,  // CFG-MSGOUT-UBX_NAV_SAT_UART1
+      0x20910018,  // CFG-MSGOUT-UBX_NAV_SAT_UART2
+      0x20910019,  // CFG-MSGOUT-UBX_NAV_SAT_USB
+      // NAV-SIG
+      0x20910345,  // CFG-MSGOUT-UBX_NAV_SIG_I2C
+      0x20910346,  // CFG-MSGOUT-UBX_NAV_SIG_UART1
+      0x20910347,  // CFG-MSGOUT-UBX_NAV_SIG_UART2
+      0x20910348,  // CFG-MSGOUT-UBX_NAV_SIG_USB
+      // NAV-DOP
+      0x20910038,  // CFG-MSGOUT-UBX_NAV_DOP_I2C
+      0x20910039,  // CFG-MSGOUT-UBX_NAV_DOP_UART1
+      0x2091003a,  // CFG-MSGOUT-UBX_NAV_DOP_UART2
+      0x2091003b,  // CFG-MSGOUT-UBX_NAV_DOP_USB
+  };
+  constexpr size_t kNumKeys = sizeof(kKeys) / sizeof(kKeys[0]);
+  constexpr size_t kCfgHeader = 4;  // version, layer, res0, res1
+  constexpr size_t kItemSize = 5;   // u32 key + u8 value
+  constexpr size_t kPayload = kCfgHeader + kNumKeys * kItemSize;
+
+  uint8_t frame[8 + kPayload]{};
+  frame[2] = 0x06;  // class CFG
+  frame[3] = 0x8a;  // id VALSET
+  uint8_t *p = frame + 6;
+  *p++ = 0x00;  // version
+  *p++ = 0x01;  // layer = RAM
+  *p++ = 0x00;  // reserved
+  *p++ = 0x00;  // reserved
+  for (size_t i = 0; i < kNumKeys; i++) {
+    *p++ = static_cast<uint8_t>(kKeys[i] & 0xff);
+    *p++ = static_cast<uint8_t>((kKeys[i] >> 8) & 0xff);
+    *p++ = static_cast<uint8_t>((kKeys[i] >> 16) & 0xff);
+    *p++ = static_cast<uint8_t>((kKeys[i] >> 24) & 0xff);
+    *p++ = 0x01;  // output rate: every nav epoch
+  }
+
+  SendPacket(frame, sizeof(frame));
 }
 
 void UbxGpsDriver::CalculateChecksum(const uint8_t *packet, size_t size, uint8_t &ck_a, uint8_t &ck_b) {

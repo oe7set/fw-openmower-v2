@@ -28,6 +28,36 @@ class GpsDriver : public DebuggableDriver {
 
     enum RTKType { RTK_NONE = 0, RTK_FLOAT = 1, RTK_FIX = 2 };
 
+    // GNSS system identifier (u-blox convention, shared by the NMEA mapping).
+    enum GnssId : uint8_t {
+      GNSS_GPS = 0,
+      GNSS_SBAS = 1,
+      GNSS_GALILEO = 2,
+      GNSS_BEIDOU = 3,
+      GNSS_QZSS = 5,
+      GNSS_GLONASS = 6,
+      GNSS_UNKNOWN = 255
+    };
+
+    // Maximum number of per-signal satellite records carried in the state.
+    // A multi-band, multi-constellation receiver can track well over 40
+    // signals; 60 leaves headroom while keeping the packed payload (1 + 60*8 =
+    // 481 bytes) inside the 512-byte SatelliteData service output.
+    static constexpr size_t MAX_SATS = 60;
+
+    // A single tracked signal. One satellite may appear multiple times when it
+    // is tracked on more than one frequency band (e.g. L1 + L2 + L5).
+    struct SatInfo {
+      uint8_t gnss_id;   // GnssId
+      uint8_t sv_id;     // Satellite vehicle id within its constellation
+      uint8_t cn0;       // Carrier-to-noise density ratio in dB-Hz
+      uint8_t band;      // 1 = L1/E1/B1, 2 = L2/B2I, 5 = L5/E5/B2a, 0 = unknown
+      int8_t elevation;  // Elevation in degrees, -128 = unknown
+      int16_t azimuth;   // Azimuth in degrees (0..360), -1 = unknown
+      bool used;         // Used in the navigation solution
+      bool healthy;      // Reported healthy by the receiver
+    };
+
     uint32_t sensor_time;
     uint32_t received_time;
 
@@ -57,7 +87,43 @@ class GpsDriver : public DebuggableDriver {
     uint8_t num_sv;
     // Position dilution of precision (unitless). 0 means "not reported".
     float pdop;
+
+    // Per-signal satellite detail (skyplot / signal-strength diagnostics).
+    SatInfo sats[MAX_SATS];
+    uint8_t sat_count;     // Number of valid entries in sats[]
+    uint8_t sats_visible;  // Total satellites in view as reported by the receiver
+
+    // Detailed dilution of precision. 0 means "not reported".
+    float gdop, hdop, vdop, tdop;
   };
+
+  /**
+   * Map a (constellation, raw signal id) pair to a normalized frequency band
+   * (1 = L1/E1/B1, 2 = L2/B2I, 5 = L5/E5/B2a, 0 = unknown). The signal-id
+   * encoding follows the u-blox UBX-NAV-SIG convention; the NMEA path passes
+   * the NMEA 4.11 signalId, which shares the same per-constellation meaning.
+   */
+  static constexpr uint8_t BandFromSignal(uint8_t gnss_id, uint8_t sig_id) {
+    switch (gnss_id) {
+      case GpsState::GNSS_GPS:
+        return sig_id == 0 ? 1 : (sig_id == 3 || sig_id == 4) ? 2 : (sig_id == 6 || sig_id == 7) ? 5 : 0;
+      case GpsState::GNSS_SBAS: return 1;
+      case GpsState::GNSS_GALILEO:
+        return (sig_id == 0 || sig_id == 1) ? 1 : (sig_id == 3 || sig_id == 4 || sig_id == 5 || sig_id == 6) ? 5 : 0;
+      case GpsState::GNSS_BEIDOU:
+        return (sig_id == 0 || sig_id == 1)   ? 1
+               : (sig_id == 2 || sig_id == 3) ? 2
+               : (sig_id == 5 || sig_id == 7) ? 5
+                                              : 0;
+      case GpsState::GNSS_QZSS:
+        return (sig_id == 0 || sig_id == 1)   ? 1
+               : (sig_id == 4 || sig_id == 5) ? 2
+               : (sig_id == 8 || sig_id == 9) ? 5
+                                              : 0;
+      case GpsState::GNSS_GLONASS: return sig_id == 0 ? 1 : sig_id == 2 ? 2 : 0;
+      default: return 0;
+    }
+  }
 
   enum Level { VERBOSE, INFO, WARN, ERROR };
 
@@ -109,6 +175,12 @@ class GpsDriver : public DebuggableDriver {
 
   // Called on serial reconnect
   virtual void ResetParserState() = 0;
+
+  // Called once at the end of StartDriver(), after the UART is up. Protocol
+  // drivers override this to push receiver configuration (e.g. enabling extra
+  // UBX messages or sending NMEA init commands). Default: no-op.
+  virtual void OnDriverStarted() {
+  }
 
   virtual size_t ProcessBytes(const uint8_t *buffer, size_t len) = 0;
 

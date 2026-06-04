@@ -18,8 +18,18 @@ class UbxGpsDriver : public GpsDriver {
     return ProtocolType::UBX;
   }
 
+  // Enable/disable the optional detailed GNSS messages (NAV-SAT/NAV-SIG/
+  // NAV-DOP) before the driver is started. Mirrors the EnableGnssDetail
+  // service register. Defaults to enabled.
+  void SetGnssDetailEnabled(bool enabled) {
+    gnss_detail_enabled_ = enabled;
+  }
+
  protected:
   void ResetParserState() override;
+  void OnDriverStarted() override {
+    ConfigureMessages();
+  }
 
  private:
   /**
@@ -49,12 +59,37 @@ class UbxGpsDriver : public GpsDriver {
   void CalculateChecksum(const uint8_t *packet, size_t size, uint8_t &ck_a, uint8_t &ck_b);
 
   void HandleNavPvt(const UbxNavPvt *msg);
+  void HandleNavSat(const uint8_t *payload, size_t size);
+  void HandleNavSig(const uint8_t *payload, size_t size);
+  void HandleNavDop(const UbxNavDop *msg);
+
+  /**
+   * Send a UBX-CFG-VALSET enabling the detailed GNSS messages (NAV-SAT,
+   * NAV-SIG, NAV-DOP) at 1 Hz on the active port. Called once on connect.
+   */
+  void ConfigureMessages();
+
+  /**
+   * Merge the latest NAV-SAT (azimuth/elevation/used) and NAV-SIG (per-band
+   * C/N0) snapshots into gps_state_.sats. NAV-SIG carries the per-signal C/N0
+   * and band; NAV-SAT carries the sky position. We key the join on
+   * (gnssId, svId). When only NAV-SAT is available we fall back to its single
+   * aggregate C/N0 per satellite.
+   */
+  void RebuildSatelliteState();
 
   uint8_t gbuffer_[512]{};
   size_t gbuffer_fill = 0;
 
   // flag if we found the header for time tracking only
   bool found_header_ = false;
+
+  bool gnss_detail_enabled_ = true;
+
+  // Latest decoded NAV-SAT entries (sky position + used/health), kept so a
+  // following NAV-SIG can attach per-band C/N0 to the right satellite.
+  UbxNavSatSv nav_sat_[GpsState::MAX_SATS]{};
+  uint8_t nav_sat_count_ = 0;
 };
 }  // namespace xbot::driver::gps
 

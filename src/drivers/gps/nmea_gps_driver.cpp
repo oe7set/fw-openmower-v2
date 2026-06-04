@@ -96,6 +96,10 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       // Set number of satellites used from GGA message
       gps_state_.num_sv = gga.satellites_tracked;
 
+      // GGA marks an epoch boundary: publish the satellites collected from the
+      // GSV sentences of the previous epoch and reset the accumulator.
+      CommitGsv();
+
       UpdateGpsStateValidity();
       TriggerStateCallback();
       return true;
@@ -155,13 +159,24 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
         default: gps_state_.fix_type = GpsState::NO_FIX; break;
       }
 
-      // PDOP is optional in GSA. minmea sets scale=0 when the field is empty.
+      // PDOP/HDOP/VDOP are optional in GSA. minmea sets scale=0 when empty.
       if (gsa.pdop.scale != 0) {
         gps_state_.pdop = static_cast<float>(minmea_tofloat(&gsa.pdop));
+      }
+      if (gsa.hdop.scale != 0) {
+        gps_state_.hdop = static_cast<float>(minmea_tofloat(&gsa.hdop));
+      }
+      if (gsa.vdop.scale != 0) {
+        gps_state_.vdop = static_cast<float>(minmea_tofloat(&gsa.vdop));
       }
 
       UpdateGpsStateValidity();
       TriggerStateCallback();
+      return true;
+    }
+
+    case MINMEA_SENTENCE_GSV: {
+      ProcessGsv(line);
       return true;
     }
 
@@ -191,6 +206,102 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       ParseHDT(line);
       return true;
   }
+}
+
+// Map an NMEA talker id (the two characters after '$') to our GnssId enum.
+// GP=GPS, GL=GLONASS, GA=Galileo, GB/BD=BeiDou, GQ/QZ=QZSS, GN=mixed (the
+// receiver emits per-constellation GSV groups, so GN should not normally
+// appear here; treat it as unknown).
+static uint8_t GnssIdFromTalker(const char *line) {
+  using GpsState = GpsDriver::GpsState;
+  if (line[0] != '$') return GpsState::GNSS_UNKNOWN;
+  const char a = line[1];
+  const char b = line[2];
+  if (a == 'G') {
+    switch (b) {
+      case 'P': return GpsState::GNSS_GPS;
+      case 'L': return GpsState::GNSS_GLONASS;
+      case 'A': return GpsState::GNSS_GALILEO;
+      case 'B': return GpsState::GNSS_BEIDOU;
+      case 'Q': return GpsState::GNSS_QZSS;
+      default: return GpsState::GNSS_UNKNOWN;
+    }
+  }
+  if (a == 'B' && b == 'D') return GpsState::GNSS_BEIDOU;
+  if (a == 'Q' && b == 'Z') return GpsState::GNSS_QZSS;
+  return GpsState::GNSS_UNKNOWN;
+}
+
+// Extract the NMEA 4.11 trailing signalId field from a GSV sentence. minmea's
+// parser ignores it, so we scan the raw line: the signalId is the last field
+// before the '*' checksum. Returns 0 ("unknown") if absent (NMEA < 4.10).
+static uint8_t SignalIdFromGsv(const char *line) {
+  const char *star = strchr(line, '*');
+  if (star == nullptr) return 0;
+  // Walk back to the comma that precedes the final field.
+  const char *p = star;
+  while (p > line && *(p - 1) != ',') {
+    p--;
+  }
+  if (p == line || *(p - 1) != ',') return 0;
+  // The final field must be a 1-2 digit signal id (not an empty trailing field
+  // and not part of the four-tuple repetition, which GSV pads with commas).
+  if (p == star) return 0;  // empty field
+  uint8_t value = 0;
+  for (const char *c = p; c < star; c++) {
+    if (*c < '0' || *c > '9') return 0;
+    value = static_cast<uint8_t>(value * 10 + (*c - '0'));
+  }
+  return value;
+}
+
+void NmeaGpsDriver::ProcessGsv(const char *line) {
+  struct minmea_sentence_gsv gsv;
+  if (!minmea_parse_gsv(&gsv, line)) {
+    return;
+  }
+
+  const uint8_t gnss_id = GnssIdFromTalker(line);
+  const uint8_t sig_id = SignalIdFromGsv(line);
+  const uint8_t band = BandFromSignal(gnss_id, sig_id);
+
+  // A full sky spans several GSV sentences across several constellations
+  // (GPGSV, GLGSV, GAGSV, ...), each constellation/band group numbered
+  // independently (msg_nr 1..total_msgs). There is no cross-constellation
+  // group marker, so we accumulate every GSV sentence into a scratch buffer
+  // and commit the whole buffer to gps_state_.sats on the next GGA, which is
+  // emitted exactly once per epoch (see CommitGsv()).
+  for (int i = 0; i < 4 && gsv_fill_ < GpsState::MAX_SATS; i++) {
+    const struct minmea_sat_info &sat = gsv.sats[i];
+    // minmea leaves unused tuples as zeroed entries; skip those.
+    if (sat.nr == 0) {
+      continue;
+    }
+    GpsState::SatInfo &out = gsv_scratch_[gsv_fill_++];
+    out.gnss_id = gnss_id;
+    out.sv_id = static_cast<uint8_t>(sat.nr);
+    out.cn0 = sat.snr < 0 ? 0 : static_cast<uint8_t>(sat.snr);
+    out.band = band;
+    out.elevation = static_cast<int8_t>(sat.elevation);
+    out.azimuth = static_cast<int16_t>(sat.azimuth);
+    // NMEA GSV does not flag used-in-fix or health; assume tracked SVs with a
+    // non-zero C/N0 are healthy. GSA's PRN list could refine "used" later.
+    out.used = false;
+    out.healthy = sat.snr > 0;
+  }
+}
+
+void NmeaGpsDriver::CommitGsv() {
+  // Publish the satellites accumulated since the previous commit and start a
+  // fresh accumulation window for the next epoch. Called from the GGA handler,
+  // the natural once-per-epoch boundary.
+  const uint8_t n = gsv_fill_ < GpsState::MAX_SATS ? gsv_fill_ : GpsState::MAX_SATS;
+  for (uint8_t i = 0; i < n; i++) {
+    gps_state_.sats[i] = gsv_scratch_[i];
+  }
+  gps_state_.sat_count = n;
+  gps_state_.sats_visible = n;
+  gsv_fill_ = 0;
 }
 
 bool NmeaGpsDriver::ParseHDT(const char *line) {
