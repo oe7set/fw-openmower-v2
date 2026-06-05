@@ -44,6 +44,14 @@ class NmeaGpsDriver : public GpsDriver {
   char line[512]{};
   size_t line_len = 0;
 
+  // Scratch buffers for ProcessUnicoreLine field extraction. Kept as members
+  // (not stack locals) because ProcessUnicoreLine runs from the state callback
+  // on the GPS driver thread, whose working area is small — every byte off the
+  // stack reduces the worst-case synchronous depth.
+  char unicore_field_[24]{};
+  char unicore_sol_stat_[24]{};
+  char unicore_pos_type_[24]{};
+
   int fix_quality = 0;
 
   // Scratch buffer for the in-progress epoch's GSV satellites.

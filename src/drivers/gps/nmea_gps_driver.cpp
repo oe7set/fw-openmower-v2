@@ -347,8 +347,18 @@ void NmeaGpsDriver::ProcessGsv(const char *line) {
     out.sv_id = static_cast<uint8_t>(sat.nr);
     out.cn0 = sat.snr < 0 ? 0 : static_cast<uint8_t>(sat.snr);
     out.band = band;
-    out.elevation = static_cast<int8_t>(sat.elevation);
-    out.azimuth = static_cast<int16_t>(sat.azimuth);
+    // A tracked satellite whose sky position is not yet known is reported by
+    // minmea as elevation 0 / azimuth 0 (empty GSV fields parse to zero). Store
+    // the "unknown" sentinels instead so it stays in the signal bars but is
+    // excluded from the skyplot (which would otherwise draw a ghost at North 0°)
+    // and the C/N0-vs-elevation scatter.
+    if (sat.elevation == 0 && sat.azimuth == 0) {
+      out.elevation = -128;
+      out.azimuth = -1;
+    } else {
+      out.elevation = static_cast<int8_t>(sat.elevation);
+      out.azimuth = static_cast<int16_t>(sat.azimuth);
+    }
     // NMEA GSV does not flag used-in-fix or health; assume tracked SVs with a
     // non-zero C/N0 are healthy. GSA's PRN list could refine "used" later.
     out.used = false;
@@ -488,18 +498,19 @@ bool NmeaGpsDriver::ProcessUnicoreLine(const char *line) {
   // body field indices below are CONFIRMED against a real UM982 dump.
   const char *body = strchr(line, ';');
   body = body ? body + 1 : line;
-  char f[24];
+  char *const f = unicore_field_;
+  constexpr size_t kFieldLen = sizeof(unicore_field_);
 
   // #PVTSLNA: the richest single message. body[0]=position type,
   // [7]=diff age, [14]=sats used, [21]=heading baseline, [33]=elevation cutoff.
   if (strncmp(line, "#PVTSLN", 7) == 0) {
-    if (UnicoreField(body, 0, f, sizeof(f))) {
+    if (UnicoreField(body, 0, f, kFieldLen)) {
       const uint8_t sol = UnicoreSolutionStatus(f);
       if (sol != 255) gps_state_.solution_status = sol;
     }
-    if (UnicoreField(body, 7, f, sizeof(f))) gps_state_.diff_age = static_cast<float>(atof(f));
-    if (UnicoreField(body, 21, f, sizeof(f))) gps_state_.baseline_len = static_cast<float>(atof(f));
-    if (UnicoreField(body, 33, f, sizeof(f))) gps_state_.elevation_cutoff = static_cast<float>(atof(f));
+    if (UnicoreField(body, 7, f, kFieldLen)) gps_state_.diff_age = static_cast<float>(atof(f));
+    if (UnicoreField(body, 21, f, kFieldLen)) gps_state_.baseline_len = static_cast<float>(atof(f));
+    if (UnicoreField(body, 33, f, kFieldLen)) gps_state_.elevation_cutoff = static_cast<float>(atof(f));
     TriggerStateCallback();
     return true;
   }
@@ -508,20 +519,23 @@ bool NmeaGpsDriver::ProcessUnicoreLine(const char *line) {
   // standard deviation. body[0]=sol_stat, [1]=pos_type, [2]=baseline,
   // [3]=heading, [6]=heading stddev. Gate on a computed GNSS solution.
   if (strncmp(line, "#UNIHEADING", 11) == 0 && strncmp(line, "#UNIHEADING2", 12) != 0) {
-    char sol_stat[24] = {}, pos_type[24] = {};
-    UnicoreField(body, 0, sol_stat, sizeof(sol_stat));
-    UnicoreField(body, 1, pos_type, sizeof(pos_type));
+    char *const sol_stat = unicore_sol_stat_;
+    char *const pos_type = unicore_pos_type_;
+    sol_stat[0] = '\0';
+    pos_type[0] = '\0';
+    UnicoreField(body, 0, sol_stat, sizeof(unicore_sol_stat_));
+    UnicoreField(body, 1, pos_type, sizeof(unicore_pos_type_));
     const bool computed =
         strcmp(sol_stat, "SOL_COMPUTED") == 0 && strstr(pos_type, "INS") == nullptr && strcmp(pos_type, "NONE") != 0;
-    if (UnicoreField(body, 2, f, sizeof(f))) gps_state_.baseline_len = static_cast<float>(atof(f));
-    if (computed && UnicoreField(body, 3, f, sizeof(f))) {
+    if (UnicoreField(body, 2, f, kFieldLen)) gps_state_.baseline_len = static_cast<float>(atof(f));
+    if (computed && UnicoreField(body, 3, f, kFieldLen)) {
       double heading_deg = atof(f);
       double heading_rad = -heading_deg * (M_PI / 180.0) + M_PI_2;
       heading_rad = fmod(heading_rad, 2.0 * M_PI);
       while (heading_rad < 0) heading_rad += 2.0 * M_PI;
       gps_state_.vehicle_heading = heading_rad;
       gps_state_.vehicle_heading_valid = true;
-      if (UnicoreField(body, 6, f, sizeof(f))) {
+      if (UnicoreField(body, 6, f, kFieldLen)) {
         gps_state_.vehicle_heading_accuracy = atof(f) * (M_PI / 180.0);  // deg stddev -> rad
       }
     } else {
@@ -536,7 +550,7 @@ bool NmeaGpsDriver::ProcessUnicoreLine(const char *line) {
   if (strncmp(line, "#AGC", 4) == 0) {
     bool any = false;
     for (int i = 0; i < 10; i++) {
-      if (UnicoreField(body, i, f, sizeof(f))) {
+      if (UnicoreField(body, i, f, kFieldLen)) {
         gps_state_.antenna_agc[i] = static_cast<int8_t>(atoi(f));
         any = true;
       }
@@ -547,8 +561,8 @@ bool NmeaGpsDriver::ProcessUnicoreLine(const char *line) {
 
   // #JAMSTATUSA: body[0]=pos_type, [1]=CWRatio (0..255), [2]=CWFlag (0/1/2).
   if (strncmp(line, "#JAMSTATUS", 10) == 0) {
-    if (UnicoreField(body, 1, f, sizeof(f))) gps_state_.jamming[0] = static_cast<uint8_t>(atoi(f));
-    if (UnicoreField(body, 2, f, sizeof(f))) gps_state_.jamming[1] = static_cast<uint8_t>(atoi(f));
+    if (UnicoreField(body, 1, f, kFieldLen)) gps_state_.jamming[0] = static_cast<uint8_t>(atoi(f));
+    if (UnicoreField(body, 2, f, kFieldLen)) gps_state_.jamming[1] = static_cast<uint8_t>(atoi(f));
     gps_state_.jamming_valid = true;
     return true;
   }
@@ -584,7 +598,10 @@ void NmeaGpsDriver::OnDriverStarted() {
       "LOG GPGSA ONTIME 1\r\n",
       "LOG GPGST ONTIME 1\r\n",
       // Unicore detail (RTK solution type, diff-age, baseline, elevation cutoff).
-      "LOG PVTSLNA ONTIME 0.2\r\n",
+      // 1 Hz is plenty: these fields change slowly, and a higher rate floods the
+      // GPS driver thread's state callback (each epoch runs the full GpsService
+      // transaction, including the ~481-byte SatelliteData blob).
+      "LOG PVTSLNA ONTIME 1\r\n",
       // Dual-antenna heading + standard deviation (only NMEA-mode source of σ).
       "LOG UNIHEADINGA ONTIME 1\r\n",
       // RF/diagnostic: per-antenna AGC + CW jamming, 1 Hz.

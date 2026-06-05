@@ -127,58 +127,72 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
   SendSatelliteCount(state.num_sv);
   SendPDOP(state.pdop);
 
-  // Detailed DOP breakdown: [gdop, hdop, vdop, tdop]. pdop stays on its own
-  // output for backward compatibility.
-  float dop[4] = {state.gdop, state.hdop, state.vdop, state.tdop};
-  SendDOP(dop, 4);
+  // Everything below is GNSS-page-only diagnostic detail. The state callback
+  // fires on every parsed sentence — several Hz with a UM982 in NMEA mode — and
+  // the SatelliteData blob alone is ~481 bytes. Sending it on every epoch makes
+  // the transaction long (it holds the framework state mutex the whole time) and
+  // floods the bus, which can starve the service heartbeat and drop the whole
+  // node. Rate-limit the detail to ~1 Hz; navigation outputs above stay full
+  // rate. The app's gnssStore carries the detail forward between updates, so the
+  // page stays live. 0 = "never sent yet" so the first epoch always emits.
+  constexpr sysinterval_t kDetailInterval = TIME_MS2I(1000);
+  const systime_t now = chVTGetSystemTimeX();
+  if (last_detail_send_ == 0 || chVTTimeElapsedSinceX(last_detail_send_) >= kDetailInterval) {
+    last_detail_send_ = now;
 
-  // Pack the per-signal satellite detail into a self-describing byte buffer:
-  // byte 0 = count, then count * 8-byte records. Kept well within the 512-byte
-  // SatelliteData output (1 + 60*8 = 481). sat_buf_ is a member (not a stack
-  // local) — this callback runs on the GPS driver's small thread stack.
-  uint8_t count = state.sat_count > GpsDriver::GpsState::MAX_SATS ? GpsDriver::GpsState::MAX_SATS : state.sat_count;
-  sat_buf_[0] = count;
-  size_t off = 1;
-  for (uint8_t i = 0; i < count; i++) {
-    const auto& s = state.sats[i];
-    sat_buf_[off++] = s.gnss_id;
-    sat_buf_[off++] = s.sv_id;
-    sat_buf_[off++] = s.cn0;
-    sat_buf_[off++] = s.band;
-    sat_buf_[off++] = static_cast<uint8_t>(s.elevation);
-    sat_buf_[off++] = static_cast<uint8_t>(s.azimuth & 0xff);
-    sat_buf_[off++] = static_cast<uint8_t>((s.azimuth >> 8) & 0xff);
-    sat_buf_[off++] = static_cast<uint8_t>((s.used ? 0x01 : 0x00) | (s.healthy ? 0x02 : 0x00));
-  }
-  SendSatelliteData(sat_buf_, off);
+    // Detailed DOP breakdown: [gdop, hdop, vdop, tdop]. pdop stays on its own
+    // output for backward compatibility.
+    float dop[4] = {state.gdop, state.hdop, state.vdop, state.tdop};
+    SendDOP(dop, 4);
 
-  // Correction age: prefer the receiver-reported differential age; fall back to
-  // the time since we last forwarded an RTCM packet when the receiver doesn't
-  // report it (diff_age < 0).
-  float correction_age = state.diff_age >= 0 ? state.diff_age : static_cast<float>(GetSecondsSinceLastRtcmPacket());
-  SendCorrectionAge(correction_age);
+    // Pack the per-signal satellite detail into a self-describing byte buffer:
+    // byte 0 = count, then count * 8-byte records. Kept well within the 512-byte
+    // SatelliteData output (1 + 60*8 = 481). sat_buf_ is a member (not a stack
+    // local) — this callback runs on the GPS driver's small thread stack.
+    uint8_t count = state.sat_count > GpsDriver::GpsState::MAX_SATS ? GpsDriver::GpsState::MAX_SATS : state.sat_count;
+    sat_buf_[0] = count;
+    size_t off = 1;
+    for (uint8_t i = 0; i < count; i++) {
+      const auto& s = state.sats[i];
+      sat_buf_[off++] = s.gnss_id;
+      sat_buf_[off++] = s.sv_id;
+      sat_buf_[off++] = s.cn0;
+      sat_buf_[off++] = s.band;
+      sat_buf_[off++] = static_cast<uint8_t>(s.elevation);
+      sat_buf_[off++] = static_cast<uint8_t>(s.azimuth & 0xff);
+      sat_buf_[off++] = static_cast<uint8_t>((s.azimuth >> 8) & 0xff);
+      sat_buf_[off++] = static_cast<uint8_t>((s.used ? 0x01 : 0x00) | (s.healthy ? 0x02 : 0x00));
+    }
+    SendSatelliteData(sat_buf_, off);
 
-  // RTK detail: [baseline_len, diff_age]. (There is no RTK ambiguity ratio in
-  // any UM982 message, so the old rtk_ratio slot is repurposed for diff_age.)
-  float rtk_info[2] = {state.baseline_len, state.diff_age};
-  SendRtkInfo(rtk_info, 2);
-  SendSolutionStatus(state.solution_status);
+    // Correction age: prefer the receiver-reported differential age; fall back to
+    // the time since we last forwarded an RTCM packet when the receiver doesn't
+    // report it (diff_age < 0).
+    float correction_age = state.diff_age >= 0 ? state.diff_age : static_cast<float>(GetSecondsSinceLastRtcmPacket());
+    SendCorrectionAge(correction_age);
 
-  // Dual-antenna heading + heading standard deviation (deg), from the same
-  // vehicle-heading state the UNIHEADING parser fills.
-  float heading_info[2] = {static_cast<float>(state.vehicle_heading * 180.0 / M_PI),
-                           static_cast<float>(state.vehicle_heading_accuracy * 180.0 / M_PI)};
-  SendHeadingInfo(heading_info, 2);
+    // RTK detail: [baseline_len, diff_age]. (There is no RTK ambiguity ratio in
+    // any UM982 message, so the old rtk_ratio slot is repurposed for diff_age.)
+    float rtk_info[2] = {state.baseline_len, state.diff_age};
+    SendRtkInfo(rtk_info, 2);
+    SendSolutionStatus(state.solution_status);
 
-  // Enforced elevation cutoff (deg) the receiver reports (PVTSLN).
-  SendElevationCutoff(state.elevation_cutoff);
+    // Dual-antenna heading + heading standard deviation (deg), from the same
+    // vehicle-heading state the UNIHEADING parser fills.
+    float heading_info[2] = {static_cast<float>(state.vehicle_heading * 180.0 / M_PI),
+                             static_cast<float>(state.vehicle_heading_accuracy * 180.0 / M_PI)};
+    SendHeadingInfo(heading_info, 2);
 
-  // Dual-antenna RF health + jamming (only when the receiver reported them).
-  if (state.antenna_agc_valid) {
-    SendAntennaAgc(state.antenna_agc, 10);
-  }
-  if (state.jamming_valid) {
-    SendJammingStatus(state.jamming, 2);
+    // Enforced elevation cutoff (deg) the receiver reports (PVTSLN).
+    SendElevationCutoff(state.elevation_cutoff);
+
+    // Dual-antenna RF health + jamming (only when the receiver reported them).
+    if (state.antenna_agc_valid) {
+      SendAntennaAgc(state.antenna_agc, 10);
+    }
+    if (state.jamming_valid) {
+      SendJammingStatus(state.jamming, 2);
+    }
   }
 
   CommitTransaction();

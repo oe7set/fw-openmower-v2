@@ -56,6 +56,13 @@ class GpsService : public GpsServiceBase {
   // NTRIP statistics - timestamp of last received RTCM packet
   uint32_t last_ntrip_time_ = 0;
 
+  // Last time the heavy GNSS-page-only detail outputs were sent (system ticks).
+  // The state callback fires on every parsed sentence (several Hz with a UM982
+  // in NMEA mode); navigation outputs go out every epoch, but the bulky detail
+  // (notably the ~481-byte SatelliteData) is rate-limited to ~1 Hz so the
+  // transaction stays short and does not flood the framework. 0 = never sent.
+  systime_t last_detail_send_ = 0;
+
   // Empty GPS state for fallback when no driver is available
   GpsDriver::GpsState empty_gps_state_{};
 

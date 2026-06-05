@@ -223,7 +223,12 @@ class GpsDriver : public DebuggableDriver {
   UARTDriver *uart_{};
   UARTConfigEx uart_config_{};
 
-  THD_WORKING_AREA(thd_wa_, 1024){};
+  // 2 KB working area. The protocol drivers run their state callback (which
+  // fires the full GpsService transaction, including the ~481-byte
+  // SatelliteData blob) synchronously on this thread, so it needs more than the
+  // original 1 KB to stay clear of a silent stack overflow (Release builds have
+  // CH_DBG_ENABLE_STACK_CHECK=FALSE).
+  THD_WORKING_AREA(thd_wa_, 2048){};
   thread_t *processing_thread_ = nullptr;
   // This is reset by the receiving ISR and set by the thread to signal if it's safe to process more data.
   volatile bool processing_done_ = true;
