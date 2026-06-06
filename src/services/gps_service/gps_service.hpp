@@ -53,7 +53,7 @@ class GpsService : public GpsServiceBase {
   // ATTN: Might become problematic as soon as GpsServiceBase.Uart defaults to != 0
   int used_port_index_ = 0;
 
-  // NTRIP statistics - timestamp of last received RTCM packet (Sabo UI display).
+  // NTRIP statistics - timestamp of last received RTCM packet
   uint32_t last_ntrip_time_ = 0;
 
   // Empty GPS state for fallback when no driver is available

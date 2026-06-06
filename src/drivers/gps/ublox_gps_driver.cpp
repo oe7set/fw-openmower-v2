@@ -7,9 +7,25 @@
 
 #include <ulog.h>
 
+#include <chrono>
 #include <cmath>
 
 namespace xbot::driver::gps {
+
+bool UbxGpsDriver::SendPacket(uint8_t *frame, size_t size) {
+  frame[0] = 0xb5;
+  frame[1] = 0x62;
+  auto *length_ptr = reinterpret_cast<uint16_t *>(frame + 4);
+  *length_ptr = size - 8;
+
+  uint8_t ck_a, ck_b;
+  CalculateChecksum(frame + 2, size - 4, ck_a, ck_b);
+
+  frame[size - 2] = ck_a;
+  frame[size - 1] = ck_b;
+
+  return send_raw(frame, size);
+}
 
 /**
  * parses the buffer and returns how many more bytes to read
@@ -133,24 +149,17 @@ bool UbxGpsDriver::ValidateChecksum(const uint8_t *packet, size_t size) {
 }
 
 void UbxGpsDriver::ProcessUbxPacket(const uint8_t *data, const size_t &size) {
-  // data = no header bytes (starts with class) and stops before checksum.
-  // The payload (without class, id and the 2-byte length) starts at data + 4.
-  uint16_t packet_id = data[0] << 8 | data[1];
-  const uint8_t *payload = data + 4;
-  const size_t payload_size = size - 4;
+  // data = no header bytes (starts with class) and stops before checksum
 
-  switch (packet_id) {
-    case (UbxNavPvt::CLASS_ID << 8 | UbxNavPvt::MESSAGE_ID):
-      if (payload_size == sizeof(UbxNavPvt)) {
-        HandleNavPvt(reinterpret_cast<const UbxNavPvt *>(payload));
-      } else {
-        ULOG_WARNING("size mismatch for PVT message!");
-      }
-      break;
-    default:
-      // NAV-SAT/NAV-SIG/NAV-DOP and any other message: GNSS-page detail, parsed
-      // off-board by the gnss_detail_parser ROS node. Ignored here.
-      break;
+  uint16_t packet_id = data[0] << 8 | data[1];
+  if (packet_id == (UbxNavPvt::CLASS_ID << 8 | UbxNavPvt::MESSAGE_ID)) {
+    // substract class, id and length
+    if (size - 4 == sizeof(UbxNavPvt)) {
+      const auto *msg = reinterpret_cast<const UbxNavPvt *>(data + 4);
+      HandleNavPvt(msg);
+    } else {
+      ULOG_WARNING("size mismatch for PVT message!");
+    }
   }
 }
 
@@ -239,7 +248,7 @@ void UbxGpsDriver::HandleNavPvt(const UbxNavPvt *msg) {
 
   gps_state_valid_ = true;
 
-  MarkStateDirty();
+  TriggerStateCallback();
 }
 
 void UbxGpsDriver::CalculateChecksum(const uint8_t *packet, size_t size, uint8_t &ck_a, uint8_t &ck_b) {

@@ -76,10 +76,6 @@ struct UbxNavPvt {
   int16_t magDec;
   uint16_t magAcc;
 } __attribute__((packed));
-
-// NOTE: The UBX-NAV-SAT / NAV-SIG / NAV-DOP datatypes used for the GNSS-page
-// detail were moved to the off-board gnss_detail_parser ROS node (which parses
-// the raw stream). The firmware only decodes NAV-PVT for navigation.
 #pragma pack(pop)
 }  // namespace xbot::driver::gps
 

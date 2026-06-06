@@ -59,11 +59,6 @@ class GpsDriver : public DebuggableDriver {
     float pdop;
   };
 
-  // NOTE: the per-signal satellite detail, DOP breakdown and RF/RTK diagnostics
-  // that used to live in GpsState (plus the BandFromSignal helper and the GnssId
-  // enum) were moved to the off-board gnss_detail_parser ROS node. GpsState now
-  // carries only navigation-critical fields.
-
   enum Level { VERBOSE, INFO, WARN, ERROR };
 
   typedef etl::delegate<void(const GpsState &new_state)> StateCallback;
@@ -103,25 +98,8 @@ class GpsDriver : public DebuggableDriver {
   StateCallback state_callback_{};
   void TriggerStateCallback();
 
-  // Mark gps_state_ as updated by the current parsing pass without publishing
-  // immediately. The driver thread fires a single TriggerStateCallback() after
-  // ProcessBytes() returns (see threadFunc), coalescing the many per-sentence
-  // updates of one receiver epoch into ONE framework transaction. The old code
-  // published on every parsed sentence (~10/s with a UM982 in NMEA mode), which
-  // flooded the packet pool and could deadlock the node. Coalescing per pass is
-  // order-independent (it always publishes the latest accumulated state) and
-  // keeps the publish on the driver thread, preserving the single-thread
-  // invariant that the GpsService callback relies on.
-  void MarkStateDirty() {
-    state_dirty_ = true;
-  }
-
   bool gps_state_valid_{};
   GpsState gps_state_{};
-
-  // Set by MarkStateDirty() during parsing, consumed by the driver thread after
-  // each ProcessBytes() pass to emit at most one state callback per pass.
-  bool state_dirty_ = false;
 
   /**
    * Send a message to the GPS. This will just output to the serial port
@@ -131,12 +109,6 @@ class GpsDriver : public DebuggableDriver {
 
   // Called on serial reconnect
   virtual void ResetParserState() = 0;
-
-  // Called once at the end of StartDriver(), after the UART is up. Protocol
-  // drivers override this to push receiver configuration (e.g. enabling extra
-  // UBX messages or sending NMEA init commands). Default: no-op.
-  virtual void OnDriverStarted() {
-  }
 
   virtual size_t ProcessBytes(const uint8_t *buffer, size_t len) = 0;
 
@@ -159,12 +131,7 @@ class GpsDriver : public DebuggableDriver {
   UARTDriver *uart_{};
   UARTConfigEx uart_config_{};
 
-  // 2 KB working area. The protocol drivers run their state callback (which
-  // fires the full GpsService transaction, including the ~481-byte
-  // SatelliteData blob) synchronously on this thread, so it needs more than the
-  // original 1 KB to stay clear of a silent stack overflow (Release builds have
-  // CH_DBG_ENABLE_STACK_CHECK=FALSE).
-  THD_WORKING_AREA(thd_wa_, 2048){};
+  THD_WORKING_AREA(thd_wa_, 1024){};
   thread_t *processing_thread_ = nullptr;
   // This is reset by the receiving ISR and set by the thread to signal if it's safe to process more data.
   volatile bool processing_done_ = true;

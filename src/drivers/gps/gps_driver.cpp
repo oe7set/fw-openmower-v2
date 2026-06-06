@@ -63,10 +63,6 @@ bool GpsDriver::StartDriver(UARTDriver *uart, uint32_t baudrate) {
 #endif
 
   uartStartReceive(uart, RECV_BUFFER_SIZE, recv_buffer1_);
-
-  // Give protocol drivers a chance to configure the receiver now that the
-  // UART is running (e.g. enable extra UBX messages).
-  OnDriverStarted();
   return true;
 }
 
@@ -79,8 +75,7 @@ bool GpsDriver::send_raw(const void *data, size_t size) {
   // Bounded TX: a stalled UART (receiver not draining, hardware fault) must not
   // block this thread forever while holding mutex_ — that mutex is also taken by
   // the raw-debug mirror path, so an infinite wait here would wedge both. On
-  // timeout we report failure to the caller (RTCM forwarding / startup config)
-  // and move on rather than deadlocking.
+  // timeout we report failure to the caller and move on rather than deadlocking.
   msg_t result = uartSendFullTimeout(uart_, &size, data, TIME_MS2I(100));
   chMtxUnlock(&mutex_);
   return result == MSG_OK;
@@ -127,14 +122,6 @@ void GpsDriver::threadFunc() {
       ProcessBytes(processing_buffer_, processing_buffer_len_);
       if (IsRawMode()) {
         RawDataOutput(processing_buffer_, processing_buffer_len_);
-      }
-      // Publish at most once per processing pass: the protocol parsers mark the
-      // state dirty for each updated sentence/message but no longer publish
-      // inline, so this coalesces a whole epoch into a single framework
-      // transaction instead of one per sentence.
-      if (state_dirty_) {
-        state_dirty_ = false;
-        TriggerStateCallback();
       }
     }
     last_ndtr = 0;

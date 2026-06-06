@@ -6,7 +6,6 @@
 #include <ulog.h>
 
 #include <board_utils.hpp>
-#include <cmath>
 #include <cstdio>
 #include <globals.hpp>
 
@@ -22,10 +21,7 @@ bool GpsService::LoadAndStartGpsDriver(ProtocolType protocol_type, uint8_t uart,
     return false;
   }
 
-  // Create the requested driver. The driver parses only the navigation-critical
-  // messages; the GNSS-page detail (per-satellite, RF, DOP breakdown) is parsed
-  // off-board by the gnss_detail_parser ROS node from the raw stream, which also
-  // requests the receiver's detail messages itself over the raw back-channel.
+  // Create the requested driver
   if (protocol_type == ProtocolType::UBX) {
     gps_driver_ = new UbxGpsDriver();
   } else {
@@ -70,18 +66,10 @@ bool GpsService::OnStart() {
 }
 
 void GpsService::OnRTCMChanged(const uint8_t* new_value, uint32_t length) {
-  // Update NTRIP timestamp when RTCM data is received (used by the Sabo cover UI
-  // to display correction age).
+  // Update NTRIP timestamp when RTCM data is received
   last_ntrip_time_ = chVTGetSystemTimeX();
 
   gps_driver_->SendRTCM(new_value, length);
-}
-
-uint32_t GpsService::GetSecondsSinceLastRtcmPacket() const {
-  if (last_ntrip_time_ == 0) {
-    return 0;  // No RTCM data received yet
-  }
-  return TIME_I2S(chVTGetSystemTimeX() - last_ntrip_time_);
 }
 
 void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
@@ -90,15 +78,11 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
   SendPosition(position, 3);
   SendPositionHorizontalAccuracy(state.position_h_accuracy);
   SendPositionVerticalAccuracy(state.position_v_accuracy);
-
   // Always emit a fix-type string every epoch so the ROS side can never latch a
-  // stale RTK value (in Single mode positions keep flowing, so the ROS
-  // position-loss watchdog never fires and the app would keep showing the last
-  // "RTK Fixed"). Derived purely from rtk_type/fix_type — the GNSS-page detail
-  // (refined solution_status etc.) is now parsed on the ROS side from the raw
-  // stream, so the firmware only emits navigation-critical outputs. "DGPS" and
-  // "SINGLE" map to the same non-RTK bucket on the ROS side, so a single
-  // non-RTK token is sufficient.
+  // stale RTK value: in Single mode positions keep flowing, so the ROS
+  // position-loss watchdog never fires and the app would otherwise keep showing
+  // the last "RTK Fixed". DGPS and SINGLE map to the same non-RTK bucket on the
+  // ROS side, so one non-RTK token is sufficient.
   using GpsState = xbot::driver::gps::GpsDriver::GpsState;
   if (state.rtk_type == GpsState::RTK_FIX) {
     SendFixType("FIX", 3);
@@ -109,7 +93,6 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
   } else {
     SendFixType("NONE", 4);
   }
-
   double vel[3] = {state.vel_e, state.vel_n, state.vel_u};
   SendMotionVectorENU(vel, 3);
   if (state.motion_heading_valid) {
@@ -122,13 +105,12 @@ void GpsService::GpsStateCallback(const GpsDriver::GpsState& state) {
   }
   SendSatelliteCount(state.num_sv);
   SendPDOP(state.pdop);
-
-  // NOTE: All GNSS-page diagnostic detail (per-satellite skyplot, DOP breakdown,
-  // RTK/correction detail, RF health) is intentionally NOT sent here. It is
-  // parsed off-board by the gnss_detail_parser ROS node from the firmware's raw
-  // GPS stream. Emitting it per epoch on this thread (which holds the framework
-  // state mutex for the whole transaction) previously flooded the packet pool
-  // and hung the node. Keeping only navigation outputs makes that impossible.
-
   CommitTransaction();
+}
+
+uint32_t GpsService::GetSecondsSinceLastRtcmPacket() const {
+  if (last_ntrip_time_ == 0) {
+    return 0;  // No RTCM data received yet
+  }
+  return TIME_I2S(chVTGetSystemTimeX() - last_ntrip_time_);
 }

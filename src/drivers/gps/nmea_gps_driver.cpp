@@ -1,40 +1,27 @@
 #include "nmea_gps_driver.h"
 
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 
 #include "minmea.h"
 
 namespace xbot::driver::gps {
 
-// This driver parses only the navigation-critical NMEA/Unicore sentences:
-// position + fix (GGA), velocity + motion heading (RMC), fix type + DOP (GSA),
-// position accuracy (GST), and vehicle heading (HDT / Unicore #UNIHEADING).
-//
-// The GNSS-page diagnostic detail (per-satellite skyplot from GSV, used-PRN
-// matching from GSA, RTK/correction detail and RF health from Unicore
-// #PVTSLN/#AGC/#JAMSTATUS) is intentionally NOT parsed here. It is parsed
-// off-board by the gnss_detail_parser ROS node directly from the raw stream.
-// Emitting that detail per epoch on this thread previously flooded the framework
-// packet pool and hung the node.
-
 /**
  * parses the buffer and returns how many more bytes to read
  */
 size_t NmeaGpsDriver::ProcessBytes(const uint8_t *buffer, size_t len) {
+  static int invocations = 0;
+  static int success = 0;
+  static int error = 0;
+  invocations++;
   while (len > 0) {
-    // If we have no partial line yet, look for the first start-of-frame symbol,
-    // ignoring everything before it. Standard NMEA frames begin with '$';
-    // Unicore proprietary ASCII frames (#UNIHEADINGA) begin with '#'.
-    // Take whichever appears first in the buffer.
+    // If we have no partial line yet, look for the first dollar symbol, ignoring everything before it.
     if (line_len == 0) {
       const uint8_t *dollar = (const uint8_t *)memchr(buffer, '$', len);
-      const uint8_t *hash = (const uint8_t *)memchr(buffer, '#', len);
-      const uint8_t *start = dollar == nullptr ? hash : hash == nullptr ? dollar : (dollar < hash ? dollar : hash);
-      if (start != nullptr) {
-        len -= start - buffer;
-        buffer = start;
+      if (dollar != nullptr) {
+        len -= dollar - buffer;
+        buffer = dollar;
       } else {
         return 1;
       }
@@ -49,20 +36,29 @@ size_t NmeaGpsDriver::ProcessBytes(const uint8_t *buffer, size_t len) {
         memcpy(&line[line_len], buffer, bytes_to_take);
         line_len += bytes_to_take;
         line[line_len] = '\0';
-        ProcessLine(line);
+        if (ProcessLine(line)) {
+          success++;
+        } else {
+          error++;
+        }
+      } else {
+        // Line would be too long, so throw away the buffer.
+        error++;
       }
-      // else: line too long, throw away the buffer.
       len -= bytes_to_take;
       buffer = newline + 1;
       line_len = 0;
     } else {
       // We will at least need two more characters (newline and null-byte), check if it could fit.
       if (line_len + len + 2 <= sizeof(line)) {
-        // Yes, so copy the remaining bytes for next time.
+        // Yes, so copy the remaining bytes for next time. Advance line_len so a
+        // sentence split across two UART reads keeps its prefix instead of being
+        // overwritten by the continuation.
         memcpy(&line[line_len], buffer, len);
         line_len += len;
         return 1;
       } else {
+        error++;
         line_len = 0;
       }
     }
@@ -81,11 +77,6 @@ void NmeaGpsDriver::UpdateGpsStateValidity() {
 }
 
 bool NmeaGpsDriver::ProcessLine(const char *line) {
-  // Unicore proprietary ASCII frames start with '#' and won't pass minmea's
-  // checksum/syntax check, so dispatch them before the standard NMEA switch.
-  if (line[0] == '#') {
-    return ProcessUnicoreLine(line);
-  }
   switch (minmea_sentence_id(line, true)) {
     case MINMEA_SENTENCE_GGA: {
       struct minmea_sentence_gga gga;
@@ -98,8 +89,6 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       gps_state_.pos_height = minmea_tofloat(&gga.altitude);
       gps_state_.position_valid = true;
 
-      // GGA quality drives rtk_type, which GpsService maps to the fix-type
-      // string. 5 = RTK float, 4 = RTK fixed; everything else is non-RTK.
       switch (gga.fix_quality) {
         case 5: gps_state_.rtk_type = GpsState::RTK_FLOAT; break;
         case 4: gps_state_.rtk_type = GpsState::RTK_FIX; break;
@@ -111,7 +100,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       gps_state_.num_sv = gga.satellites_tracked;
 
       UpdateGpsStateValidity();
-      MarkStateDirty();
+      TriggerStateCallback();
       return true;
     }
 
@@ -153,7 +142,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       }
       gps_state_.motion_heading_accuracy = 0;
 
-      MarkStateDirty();
+      TriggerStateCallback();
       return true;
     }
 
@@ -169,13 +158,13 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
         default: gps_state_.fix_type = GpsState::NO_FIX; break;
       }
 
-      // PDOP is optional in GSA. minmea sets scale=0 when empty.
+      // PDOP is optional in GSA. minmea sets scale=0 when the field is empty.
       if (gsa.pdop.scale != 0) {
         gps_state_.pdop = static_cast<float>(minmea_tofloat(&gsa.pdop));
       }
 
       UpdateGpsStateValidity();
-      MarkStateDirty();
+      TriggerStateCallback();
       return true;
     }
 
@@ -192,7 +181,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       gps_state_.position_h_accuracy = sqrt(lat_std * lat_std + lon_std * lon_std);
       gps_state_.position_v_accuracy = alt_std;
 
-      MarkStateDirty();
+      TriggerStateCallback();
       return true;
     }
 
@@ -243,91 +232,12 @@ bool NmeaGpsDriver::ParseHDT(const char *line) {
   // (~0.57 deg) so downstream EKF stages do not treat the heading as perfect.
   gps_state_.vehicle_heading_accuracy = 0.01;
 
-  MarkStateDirty();
+  TriggerStateCallback();
   return true;
-}
-
-// Copy the Nth comma-delimited field of `body` (0-based) into `out`. Returns
-// false when the field is missing. `body` is the substring after ';' for
-// Unicore '#' frames. Stops at ',' '*' or end-of-string.
-static bool UnicoreField(const char *body, int idx, char *out, size_t out_len) {
-  const char *p = body;
-  for (int i = 0; i < idx && p; i++) {
-    p = strchr(p, ',');
-    if (p) p++;
-  }
-  if (!p) return false;
-  size_t n = 0;
-  while (p[n] && p[n] != ',' && p[n] != '*' && n < out_len - 1) {
-    out[n] = p[n];
-    n++;
-  }
-  out[n] = '\0';
-  return n > 0;
-}
-
-bool NmeaGpsDriver::ProcessUnicoreLine(const char *line) {
-  // Unicore ASCII framing: "#HEADER,...;BODY*CRC" — body starts after ';'.
-  const char *body = strchr(line, ';');
-  body = body ? body + 1 : line;
-  char *const f = unicore_field_;
-  constexpr size_t kFieldLen = sizeof(unicore_field_);
-
-  // #UNIHEADINGA (but not #UNIHEADING2): dual-antenna vehicle heading + its
-  // standard deviation. This is navigation-critical (feeds the EKF), so it stays
-  // in firmware. body[0]=sol_stat, [1]=pos_type, [3]=heading, [6]=heading stddev.
-  if (strncmp(line, "#UNIHEADING", 11) == 0 && strncmp(line, "#UNIHEADING2", 12) != 0) {
-    char *const sol_stat = unicore_sol_stat_;
-    char *const pos_type = unicore_pos_type_;
-    sol_stat[0] = '\0';
-    pos_type[0] = '\0';
-    UnicoreField(body, 0, sol_stat, sizeof(unicore_sol_stat_));
-    UnicoreField(body, 1, pos_type, sizeof(unicore_pos_type_));
-    const bool computed =
-        strcmp(sol_stat, "SOL_COMPUTED") == 0 && strstr(pos_type, "INS") == nullptr && strcmp(pos_type, "NONE") != 0;
-    if (computed && UnicoreField(body, 3, f, kFieldLen)) {
-      double heading_deg = atof(f);
-      double heading_rad = -heading_deg * (M_PI / 180.0) + M_PI_2;
-      heading_rad = fmod(heading_rad, 2.0 * M_PI);
-      while (heading_rad < 0) heading_rad += 2.0 * M_PI;
-      gps_state_.vehicle_heading = heading_rad;
-      gps_state_.vehicle_heading_valid = true;
-      if (UnicoreField(body, 6, f, kFieldLen)) {
-        gps_state_.vehicle_heading_accuracy = atof(f) * (M_PI / 180.0);  // deg stddev -> rad
-      }
-    } else {
-      gps_state_.vehicle_heading_valid = false;
-    }
-    MarkStateDirty();
-    return true;
-  }
-
-  return true;  // Other Unicore frames are GNSS-page detail — parsed off-board.
 }
 
 void NmeaGpsDriver::ResetParserState() {
   line_len = 0;
-}
-
-void NmeaGpsDriver::OnDriverStarted() {
-  // Request the navigation-critical sentences from the receiver (Unicore UM98x).
-  // These are RAM-level LOG/CONFIG directives only — no MODE/SAVECONFIG — so they
-  // do not change the persisted rover configuration or wear flash, and a
-  // non-Unicore NMEA receiver ignores the proprietary ones. The GNSS-page detail
-  // logs (GSV/PVTSLNA/AGCA/JAMSTATUS) are requested separately by the off-board
-  // gnss_detail_parser over the raw back-channel, so they are not sent here.
-  static const char *const kCommands[] = {
-      "CONFIG NMEA0183 V411\r\n",
-      "LOG GPGGA ONTIME 1\r\n",
-      "LOG GPRMC ONTIME 1\r\n",
-      "LOG GPGSA ONTIME 1\r\n",
-      "LOG GPGST ONTIME 1\r\n",
-      // Dual-antenna heading + standard deviation (navigation-critical).
-      "LOG UNIHEADINGA ONTIME 1\r\n",
-  };
-  for (const char *cmd : kCommands) {
-    send_raw(cmd, strlen(cmd));
-  }
 }
 
 }  // namespace xbot::driver::gps

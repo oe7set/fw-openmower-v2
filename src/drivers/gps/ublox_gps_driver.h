@@ -23,6 +23,12 @@ class UbxGpsDriver : public GpsDriver {
 
  private:
   /**
+   * Send a packet to the GPS. This will add a header and a checksum, but the
+   * space is assumed to already be allocated
+   */
+  bool SendPacket(uint8_t *data, size_t size);
+
+  /**
    * Parses the rx buffer and looks for valid ubx messages
    */
   size_t ProcessBytes(const uint8_t *buffer, size_t len) override;
@@ -42,11 +48,6 @@ class UbxGpsDriver : public GpsDriver {
    */
   void CalculateChecksum(const uint8_t *packet, size_t size, uint8_t &ck_a, uint8_t &ck_b);
 
-  // NAV-PVT carries everything navigation needs: position, velocity, fix type,
-  // RTK carrier solution, heading and accuracy. The detailed messages (NAV-SAT/
-  // NAV-SIG for the skyplot, NAV-DOP for the DOP breakdown) are parsed off-board
-  // by the gnss_detail_parser ROS node from the raw stream, so they are not
-  // handled here.
   void HandleNavPvt(const UbxNavPvt *msg);
 
   uint8_t gbuffer_[512]{};
