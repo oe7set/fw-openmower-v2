@@ -76,9 +76,14 @@ void GpsDriver::SetStateCallback(const GpsDriver::StateCallback &function) {
 
 bool GpsDriver::send_raw(const void *data, size_t size) {
   chMtxLock(&mutex_);
-  uartSendFullTimeout(uart_, &size, data, TIME_INFINITE);
+  // Bounded TX: a stalled UART (receiver not draining, hardware fault) must not
+  // block this thread forever while holding mutex_ — that mutex is also taken by
+  // the raw-debug mirror path, so an infinite wait here would wedge both. On
+  // timeout we report failure to the caller (RTCM forwarding / startup config)
+  // and move on rather than deadlocking.
+  msg_t result = uartSendFullTimeout(uart_, &size, data, TIME_MS2I(100));
   chMtxUnlock(&mutex_);
-  return true;
+  return result == MSG_OK;
 }
 
 void GpsDriver::threadFunc() {
@@ -122,6 +127,14 @@ void GpsDriver::threadFunc() {
       ProcessBytes(processing_buffer_, processing_buffer_len_);
       if (IsRawMode()) {
         RawDataOutput(processing_buffer_, processing_buffer_len_);
+      }
+      // Publish at most once per processing pass: the protocol parsers mark the
+      // state dirty for each updated sentence/message but no longer publish
+      // inline, so this coalesces a whole epoch into a single framework
+      // transaction instead of one per sentence.
+      if (state_dirty_) {
+        state_dirty_ = false;
+        TriggerStateCallback();
       }
     }
     last_ndtr = 0;

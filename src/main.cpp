@@ -124,6 +124,34 @@ int main() {
   xbot::service::Io::start();
   StartServices();
   SetStatusLedColor(GREEN);
+
+  /*
+   * Independent watchdog. The IWDG runs off the always-on LSI clock and keeps
+   * counting even if the main clock tree or any application thread deadlocks.
+   * Started only HERE, after all one-time boot work (filesystem mount, lwIP,
+   * platform + service bring-up) is complete: those steps can legitimately hold
+   * the CPU and would otherwise risk a boot reset-loop. From now on the system
+   * is in steady state and the idle thread runs regularly.
+   *
+   * Fed from the heartbeat virtual-timer callback (tick-ISR context), but only
+   * while the idle thread is still being scheduled — so a CPU-bound deadlock at
+   * >= NORMALPRIO stops the feed and the chip resets after ~2 s instead of
+   * hanging until a power-cycle. LSI ~32 kHz / prescaler 64 => ~500 Hz; reload
+   * 1000 => ~2 s. winr = max (0x0FFF) disables the refresh window so we may
+   * reload at any time (the H7 IWDG is windowed).
+   */
+  static const WDGConfig wdg_cfg = {
+      .pr = STM32_IWDG_PR_64,
+      .rlr = STM32_IWDG_RL(1000),
+      .winr = 0x0FFF,
+  };
+#ifdef DEBUG_BUILD
+  // Freeze the IWDG while the core is halted by the debugger, otherwise a
+  // breakpoint pause longer than the timeout would reset the board.
+  DBGMCU->APB4FZ1 |= DBGMCU_APB4FZ1_DBG_IWDG1;
+#endif
+  wdgStart(&WDGD1, &wdg_cfg);
+
   DispatchEvents();
 }
 

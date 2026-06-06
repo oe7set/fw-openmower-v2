@@ -74,6 +74,12 @@ bool xbot::service::sock::receivePacket(SocketPtr socket, PacketPtr* packet) {
 }
 
 bool xbot::service::sock::transmitPacket(SocketPtr socket, PacketPtr packet, uint32_t ip, uint16_t port) {
+  // allocatePacket() may return nullptr under pool exhaustion; the framework
+  // send paths forward that here without checking. Drop it instead of
+  // dereferencing a null packet (which would hard-fault the board).
+  if (packet == nullptr) {
+    return false;
+  }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);

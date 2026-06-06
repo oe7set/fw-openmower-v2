@@ -77,82 +77,9 @@ struct UbxNavPvt {
   uint16_t magAcc;
 } __attribute__((packed));
 
-// UBX-NAV-DOP: dilution of precision breakdown. Fixed 18-byte payload.
-struct UbxNavDop {
-  enum {
-    CLASS_ID = 1u,
-    MESSAGE_ID = 4u,
-  };
-
-  uint32_t iTOW;
-  uint16_t gDOP;  // All DOP values are scaled by 0.01.
-  uint16_t pDOP;
-  uint16_t tDOP;
-  uint16_t vDOP;
-  uint16_t hDOP;
-  uint16_t nDOP;
-  uint16_t eDOP;
-} __attribute__((packed));
-
-// UBX-NAV-SAT: per-satellite information. Variable length: an 8-byte header
-// followed by numSvs repetitions of UbxNavSatSv (12 bytes each).
-struct UbxNavSatSv {
-  uint8_t gnssId;
-  uint8_t svId;
-  uint8_t cno;     // dB-Hz
-  int8_t elev;     // deg, range -90..90 (unknown otherwise)
-  int16_t azim;    // deg, range 0..360
-  int16_t prRes;   // pseudorange residual, 0.1 m
-  uint32_t flags;  // bit3 svUsed, bits4-5 health, bits8-10 orbitSource, ...
-} __attribute__((packed));
-
-struct UbxNavSat {
-  enum {
-    CLASS_ID = 1u,
-    MESSAGE_ID = 53u,  // 0x35
-    FLAGS_SV_USED = 1u << 3,
-    FLAGS_HEALTH_MASK = 0b11u << 4,
-    FLAGS_HEALTH_HEALTHY = 1u << 4,
-  };
-
-  uint32_t iTOW;
-  uint8_t version;
-  uint8_t numSvs;
-  uint8_t reserved0[2];
-  // Followed by numSvs * UbxNavSatSv.
-} __attribute__((packed));
-
-// UBX-NAV-SIG: per-signal information (multi-band C/N0). Variable length: an
-// 8-byte header followed by numSigs repetitions of UbxNavSigSig (16 bytes).
-struct UbxNavSigSig {
-  uint8_t gnssId;
-  uint8_t svId;
-  uint8_t sigId;
-  uint8_t freqId;
-  int16_t prRes;
-  uint8_t cno;         // dB-Hz
-  uint8_t qualityInd;  // signal quality indicator
-  uint8_t corrSource;
-  uint8_t ionoModel;
-  uint16_t sigFlags;  // bits0-1 health, bit2 prSmoothed, bit3 prUsed, ...
-  uint8_t reserved1[4];
-} __attribute__((packed));
-
-struct UbxNavSig {
-  enum {
-    CLASS_ID = 1u,
-    MESSAGE_ID = 67u,  // 0x43
-    SIGFLAGS_HEALTH_MASK = 0b11u,
-    SIGFLAGS_HEALTH_HEALTHY = 1u,
-    SIGFLAGS_PR_USED = 1u << 3,
-  };
-
-  uint32_t iTOW;
-  uint8_t version;
-  uint8_t numSigs;
-  uint8_t reserved0[2];
-  // Followed by numSigs * UbxNavSigSig.
-} __attribute__((packed));
+// NOTE: The UBX-NAV-SAT / NAV-SIG / NAV-DOP datatypes used for the GNSS-page
+// detail were moved to the off-board gnss_detail_parser ROS node (which parses
+// the raw stream). The firmware only decodes NAV-PVT for navigation.
 #pragma pack(pop)
 }  // namespace xbot::driver::gps
 

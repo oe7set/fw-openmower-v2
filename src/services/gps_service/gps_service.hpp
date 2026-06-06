@@ -53,24 +53,11 @@ class GpsService : public GpsServiceBase {
   // ATTN: Might become problematic as soon as GpsServiceBase.Uart defaults to != 0
   int used_port_index_ = 0;
 
-  // NTRIP statistics - timestamp of last received RTCM packet
+  // NTRIP statistics - timestamp of last received RTCM packet (Sabo UI display).
   uint32_t last_ntrip_time_ = 0;
-
-  // Last time the heavy GNSS-page-only detail outputs were sent (system ticks).
-  // The state callback fires on every parsed sentence (several Hz with a UM982
-  // in NMEA mode); navigation outputs go out every epoch, but the bulky detail
-  // (notably the ~481-byte SatelliteData) is rate-limited to ~1 Hz so the
-  // transaction stays short and does not flood the framework. 0 = never sent.
-  systime_t last_detail_send_ = 0;
 
   // Empty GPS state for fallback when no driver is available
   GpsDriver::GpsState empty_gps_state_{};
-
-  // Scratch buffer for packing the SatelliteData output. Kept as a member (the
-  // service is a global singleton) instead of a stack local, because
-  // GpsStateCallback runs on the GPS driver's small (1 KB) thread stack where a
-  // 512-byte local would overflow and hard-fault the board.
-  uint8_t sat_buf_[512]{};
 
   void GpsStateCallback(const GpsDriver::GpsState& state);
 };

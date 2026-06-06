@@ -28,36 +28,6 @@ class GpsDriver : public DebuggableDriver {
 
     enum RTKType { RTK_NONE = 0, RTK_FLOAT = 1, RTK_FIX = 2 };
 
-    // GNSS system identifier (u-blox convention, shared by the NMEA mapping).
-    enum GnssId : uint8_t {
-      GNSS_GPS = 0,
-      GNSS_SBAS = 1,
-      GNSS_GALILEO = 2,
-      GNSS_BEIDOU = 3,
-      GNSS_QZSS = 5,
-      GNSS_GLONASS = 6,
-      GNSS_UNKNOWN = 255
-    };
-
-    // Maximum number of per-signal satellite records carried in the state.
-    // A multi-band, multi-constellation receiver can track well over 40
-    // signals; 60 leaves headroom while keeping the packed payload (1 + 60*8 =
-    // 481 bytes) inside the 512-byte SatelliteData service output.
-    static constexpr size_t MAX_SATS = 60;
-
-    // A single tracked signal. One satellite may appear multiple times when it
-    // is tracked on more than one frequency band (e.g. L1 + L2 + L5).
-    struct SatInfo {
-      uint8_t gnss_id;   // GnssId
-      uint8_t sv_id;     // Satellite vehicle id within its constellation
-      uint8_t cn0;       // Carrier-to-noise density ratio in dB-Hz
-      uint8_t band;      // 1 = L1/E1/B1, 2 = L2/B2I, 5 = L5/E5/B2a, 0 = unknown
-      int8_t elevation;  // Elevation in degrees, -128 = unknown
-      int16_t azimuth;   // Azimuth in degrees (0..360), -1 = unknown
-      bool used;         // Used in the navigation solution
-      bool healthy;      // Reported healthy by the receiver
-    };
-
     uint32_t sensor_time;
     uint32_t received_time;
 
@@ -87,63 +57,12 @@ class GpsDriver : public DebuggableDriver {
     uint8_t num_sv;
     // Position dilution of precision (unitless). 0 means "not reported".
     float pdop;
-
-    // Per-signal satellite detail (skyplot / signal-strength diagnostics).
-    SatInfo sats[MAX_SATS];
-    uint8_t sat_count;     // Number of valid entries in sats[]
-    uint8_t sats_visible;  // Total satellites in view as reported by the receiver
-
-    // Detailed dilution of precision. 0 means "not reported".
-    float gdop, hdop, vdop, tdop;
-
-    // Age of the applied RTCM/differential corrections in seconds.
-    // -1 means "not reported".
-    float diff_age = -1;
-    // Dual-antenna baseline length in metres (Unicore). 0 means "not reported".
-    float baseline_len = 0;
-    // Refined solution status (Unicore): 0 none, 1 single, 2 DGPS, 3 float,
-    // 4 fixed. 255 means "not reported" (fall back to fix_type/rtk_type).
-    uint8_t solution_status = 255;
-    // Enforced elevation cutoff mask in degrees, as the receiver reports it
-    // (Unicore PVTSLN). -1 means "not reported".
-    float elevation_cutoff = -1;
-    // Per-antenna AGC (Unicore #AGC): ANT1 (master) bands [0..4], ANT2 (slave)
-    // bands [5..9]. -1 = band/channel unused. All zero = "not reported".
-    int8_t antenna_agc[10] = {};
-    bool antenna_agc_valid = false;
-    // Jamming detection (Unicore #JAMSTATUS): [0] CWRatio 0..255 (higher = more
-    // interference), [1] CWFlag (0 none, 1 CW, 2 strong CW). valid flag gates it.
-    uint8_t jamming[2] = {};
-    bool jamming_valid = false;
   };
 
-  /**
-   * Map a (constellation, raw signal id) pair to a normalized frequency band
-   * (1 = L1/E1/B1, 2 = L2/B2I, 5 = L5/E5/B2a, 0 = unknown). The signal-id
-   * encoding follows the u-blox UBX-NAV-SIG convention; the NMEA path passes
-   * the NMEA 4.11 signalId, which shares the same per-constellation meaning.
-   */
-  static constexpr uint8_t BandFromSignal(uint8_t gnss_id, uint8_t sig_id) {
-    switch (gnss_id) {
-      case GpsState::GNSS_GPS:
-        return sig_id == 0 ? 1 : (sig_id == 3 || sig_id == 4) ? 2 : (sig_id == 6 || sig_id == 7) ? 5 : 0;
-      case GpsState::GNSS_SBAS: return 1;
-      case GpsState::GNSS_GALILEO:
-        return (sig_id == 0 || sig_id == 1) ? 1 : (sig_id == 3 || sig_id == 4 || sig_id == 5 || sig_id == 6) ? 5 : 0;
-      case GpsState::GNSS_BEIDOU:
-        return (sig_id == 0 || sig_id == 1)   ? 1
-               : (sig_id == 2 || sig_id == 3) ? 2
-               : (sig_id == 5 || sig_id == 7) ? 5
-                                              : 0;
-      case GpsState::GNSS_QZSS:
-        return (sig_id == 0 || sig_id == 1)   ? 1
-               : (sig_id == 4 || sig_id == 5) ? 2
-               : (sig_id == 8 || sig_id == 9) ? 5
-                                              : 0;
-      case GpsState::GNSS_GLONASS: return sig_id == 0 ? 1 : sig_id == 2 ? 2 : 0;
-      default: return 0;
-    }
-  }
+  // NOTE: the per-signal satellite detail, DOP breakdown and RF/RTK diagnostics
+  // that used to live in GpsState (plus the BandFromSignal helper and the GnssId
+  // enum) were moved to the off-board gnss_detail_parser ROS node. GpsState now
+  // carries only navigation-critical fields.
 
   enum Level { VERBOSE, INFO, WARN, ERROR };
 
@@ -184,8 +103,25 @@ class GpsDriver : public DebuggableDriver {
   StateCallback state_callback_{};
   void TriggerStateCallback();
 
+  // Mark gps_state_ as updated by the current parsing pass without publishing
+  // immediately. The driver thread fires a single TriggerStateCallback() after
+  // ProcessBytes() returns (see threadFunc), coalescing the many per-sentence
+  // updates of one receiver epoch into ONE framework transaction. The old code
+  // published on every parsed sentence (~10/s with a UM982 in NMEA mode), which
+  // flooded the packet pool and could deadlock the node. Coalescing per pass is
+  // order-independent (it always publishes the latest accumulated state) and
+  // keeps the publish on the driver thread, preserving the single-thread
+  // invariant that the GpsService callback relies on.
+  void MarkStateDirty() {
+    state_dirty_ = true;
+  }
+
   bool gps_state_valid_{};
   GpsState gps_state_{};
+
+  // Set by MarkStateDirty() during parsing, consumed by the driver thread after
+  // each ProcessBytes() pass to emit at most one state callback per pass.
+  bool state_dirty_ = false;
 
   /**
    * Send a message to the GPS. This will just output to the serial port
