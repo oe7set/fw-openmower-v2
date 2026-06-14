@@ -100,7 +100,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       gps_state_.num_sv = gga.satellites_tracked;
 
       UpdateGpsStateValidity();
-      TriggerStateCallback();
+      MarkStateDirty();
       return true;
     }
 
@@ -142,7 +142,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       }
       gps_state_.motion_heading_accuracy = 0;
 
-      TriggerStateCallback();
+      MarkStateDirty();
       return true;
     }
 
@@ -164,7 +164,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       }
 
       UpdateGpsStateValidity();
-      TriggerStateCallback();
+      MarkStateDirty();
       return true;
     }
 
@@ -181,7 +181,7 @@ bool NmeaGpsDriver::ProcessLine(const char *line) {
       gps_state_.position_h_accuracy = sqrt(lat_std * lat_std + lon_std * lon_std);
       gps_state_.position_v_accuracy = alt_std;
 
-      TriggerStateCallback();
+      MarkStateDirty();
       return true;
     }
 
@@ -232,7 +232,7 @@ bool NmeaGpsDriver::ParseHDT(const char *line) {
   // (~0.57 deg) so downstream EKF stages do not treat the heading as perfect.
   gps_state_.vehicle_heading_accuracy = 0.01;
 
-  TriggerStateCallback();
+  MarkStateDirty();
   return true;
 }
 

@@ -248,7 +248,7 @@ void UbxGpsDriver::HandleNavPvt(const UbxNavPvt *msg) {
 
   gps_state_valid_ = true;
 
-  TriggerStateCallback();
+  MarkStateDirty();
 }
 
 void UbxGpsDriver::CalculateChecksum(const uint8_t *packet, size_t size, uint8_t &ck_a, uint8_t &ck_b) {

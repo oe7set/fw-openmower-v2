@@ -98,8 +98,21 @@ class GpsDriver : public DebuggableDriver {
   StateCallback state_callback_{};
   void TriggerStateCallback();
 
+  // Mark gps_state_ as updated by the current parsing pass without publishing
+  // immediately. The driver thread fires a single TriggerStateCallback() after
+  // ProcessBytes() returns, coalescing one receiver epoch's many per-sentence
+  // updates into ONE framework transaction. Publishing per sentence (~50/s with
+  // a UM982 in NMEA) floods the 25-slot packet pool and times out every service.
+  void MarkStateDirty() {
+    state_dirty_ = true;
+  }
+
   bool gps_state_valid_{};
   GpsState gps_state_{};
+
+  // Set during parsing, consumed by the driver thread after each ProcessBytes()
+  // pass to emit at most one state callback per pass.
+  bool state_dirty_ = false;
 
   /**
    * Send a message to the GPS. This will just output to the serial port

@@ -123,6 +123,15 @@ void GpsDriver::threadFunc() {
       if (IsRawMode()) {
         RawDataOutput(processing_buffer_, processing_buffer_len_);
       }
+      // Publish at most once per processing pass: the protocol parsers mark the
+      // state dirty per updated sentence but no longer publish inline, so a whole
+      // epoch coalesces into a single framework transaction instead of one per
+      // sentence. Keeps the publish on the driver thread (single-thread invariant
+      // the GpsService callback relies on).
+      if (state_dirty_) {
+        state_dirty_ = false;
+        TriggerStateCallback();
+      }
     }
     last_ndtr = 0;
     processing_buffer_len_ = 0;
