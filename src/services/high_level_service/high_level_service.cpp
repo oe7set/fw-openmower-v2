@@ -68,7 +68,11 @@ uint32_t HighLevelService::OnLoop(uint32_t /*now_micros*/, uint32_t /*last_tick_
     }
   }
 
-  const char* git_hash = BUILD_GIT_HASH;
+  // Upstream's version scheme (cmake/GetGitVersion.cmake) exposes BUILD_VERSION
+  // from `git describe --tags --dirty --always`, which embeds the short commit
+  // hash (e.g. v0.0.19-dev-3-gabc1234). Use it as the firmware git-hash field;
+  // it is a strict superset of the bare hash we reported before.
+  const char* git_hash = BUILD_VERSION;
   const char* build_date = BUILD_DATE;
   const size_t git_hash_len = std::strlen(git_hash);
   const size_t build_date_len = std::strlen(build_date);
