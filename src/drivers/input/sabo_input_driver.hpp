@@ -95,7 +95,7 @@ class SaboInputDriver : public InputDriver {
   // HEARTBEAT_STOP_WINDOWS * 200ms.
   static constexpr uint8_t HEARTBEAT_STOP_WINDOWS = 2;
   uint8_t heartbeat_low_windows_ = HEARTBEAT_STOP_WINDOWS;  // consecutive windows below threshold
-  volatile bool heartbeat_stopped_ = true;                 // debounced STOP state (written in timer ISR)
+  volatile bool heartbeat_stopped_ = true;                  // debounced STOP state (written in timer ISR)
 
   // Consecutive agreeing samples required before a sensor state change is
   // accepted (see Tick / Input::UpdateDebounced). Tick runs every 20ms, so 3
