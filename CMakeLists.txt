@@ -70,6 +70,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         src/main.cpp
         src/globals.cpp
         src/heartbeat.c
+        src/watchdog.c
         src/id_eeprom.c
         src/boot_service_discovery.cpp
         src/json_stream.cpp

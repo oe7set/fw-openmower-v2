@@ -37,6 +37,23 @@ bool xbot::service::sock::initialize(SocketPtr socket_ptr, bool bind_multicast, 
     }
   }
 
+  // Set send timeout. Without this a sendto() can block the calling service
+  // thread when lwIP runs out of pbufs/netbufs (e.g. under bursty bus load or
+  // when the link briefly stalls). A blocked send stops that service's
+  // heartbeats, which makes the high level drop the service and was a
+  // contributor to the multi-hour freeze. A bounded timeout lets the send fail
+  // and the thread keep running; the dropped packet is recovered by the next
+  // periodic send.
+  {
+    timeval opt{};
+    opt.tv_sec = 0;
+    opt.tv_usec = 100'000;  // 100ms
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &opt, sizeof(opt)) < 0) {
+      close(fd);
+      return false;
+    }
+  }
+
   // Create a pointer to the fd and return it.
   *socket_ptr = fd;
   return true;

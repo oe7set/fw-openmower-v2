@@ -1454,7 +1454,10 @@
  * SO_SNDTIMEO processing.
  */
 #ifndef LWIP_SO_SNDTIMEO
-#define LWIP_SO_SNDTIMEO                0
+// Enabled so the xbot UDP socket can set a bounded send timeout (see
+// portable/xbot/socket.cpp). Prevents a sendto() from blocking a service
+// thread forever when lwIP runs out of buffers.
+#define LWIP_SO_SNDTIMEO                1
 #endif
 
 /**

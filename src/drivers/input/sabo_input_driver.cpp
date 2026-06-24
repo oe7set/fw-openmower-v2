@@ -90,8 +90,10 @@ bool SaboInputDriver::GetSensorState(SensorId sensor_id) {
 
   // Handle STOP_REAR heartbeat sensor
   if (sensor_id == SensorId::STOP_REAR) {
-    // Heartbeat pulse stop when pressed (button pressed = no pulses)
-    return (heartbeat_last_ < heartbeat_min_);
+    // Heartbeat pulses stop when pressed (button pressed = no pulses). Use the
+    // debounced state (see HeartbeatTimerCallback) instead of the raw count to
+    // avoid spurious stops from per-window jitter near the threshold.
+    return heartbeat_stopped_;
   }
 
   return false;  // Invalid sensor index
@@ -121,7 +123,13 @@ void SaboInputDriver::Tick() {
     switch (input.sabo.type) {
       case InputType::SENSOR: {
         bool sensor_state = GetSensorState(input.sabo.id.sensor_id);
-        input.Update(sensor_state);
+        // Glitch-filter the raw sensor reading: require several consecutive
+        // agreeing samples (Tick runs every 20ms, so SENSOR_DEBOUNCE_SAMPLES=3
+        // => 60ms) before accepting a change. This rejects single-sample EMI
+        // spikes from the motors that would otherwise trip a spurious
+        // lift/stop emergency. STOP_REAR already has its own hysteresis in
+        // GetSensorState(), so the extra filtering here is harmless for it.
+        input.UpdateDebounced(sensor_state, SENSOR_DEBOUNCE_SAMPLES);
         break;
       }
       case InputType::BUTTON:
@@ -148,6 +156,23 @@ void SaboInputDriver::HeartbeatTimerCallback(virtual_timer_t* vtp, void* arg) {
   uint16_t current = driver->heartbeat_counter_;
   driver->heartbeat_counter_ = 0;
   driver->heartbeat_last_ = current;
+
+  // Debounce the STOP_REAR state: only flip to STOPPED after several
+  // consecutive sub-threshold windows so a single jittery window near the
+  // threshold does not trigger a spurious emergency stop. A single good window
+  // immediately clears the STOP state (asymmetric hysteresis: slow to assert,
+  // fast to release, so a real release of the stop bar resumes promptly).
+  if (current < driver->heartbeat_min_) {
+    if (driver->heartbeat_low_windows_ < HEARTBEAT_STOP_WINDOWS) {
+      driver->heartbeat_low_windows_++;
+    }
+    if (driver->heartbeat_low_windows_ >= HEARTBEAT_STOP_WINDOWS) {
+      driver->heartbeat_stopped_ = true;
+    }
+  } else {
+    driver->heartbeat_low_windows_ = 0;
+    driver->heartbeat_stopped_ = false;
+  }
 
   // Note: No logging here - timer callback runs in ISR context
 }

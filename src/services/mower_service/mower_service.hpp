@@ -20,10 +20,6 @@ class MowerService : public MowerServiceBase {
   explicit MowerService(const uint16_t service_id) : MowerServiceBase(service_id, wa, sizeof(wa)) {
   }
 
-  MotorDriver::ESCState GetESCState() const {
-    return esc_state_;
-  }
-
   void SetDriver(MotorDriver* motor_driver);
 
   void OnEmergencyChangedEvent();

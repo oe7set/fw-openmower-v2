@@ -41,7 +41,12 @@ uint32_t EmergencyService::CheckTimeouts(uint32_t now) {
   uint32_t block_time = UINT32_MAX;
   {
     Lock lk{&mtx_};
-    if (TimeoutReached(now - last_high_level_emergency_message_, 1'000'000, block_time)) {
+    // High-level heartbeat timeout. The high level sends heartbeats at 5 Hz
+    // (every 200 ms, see mower_comms_v2). A 2 s window tolerates several
+    // consecutive missed/late heartbeats (scheduling jitter, network hiccups,
+    // service reclaim cycles) without falsely tripping the emergency stop,
+    // while still detecting a genuinely dead high level within ~2 s.
+    if (TimeoutReached(now - last_high_level_emergency_message_, 2'000'000, block_time)) {
       reasons |= EmergencyReason::TIMEOUT_HIGH_LEVEL;
     }
   }

@@ -96,7 +96,6 @@ class GpsDriver : public DebuggableDriver {
 
  protected:
   StateCallback state_callback_{};
-  void TriggerStateCallback();
 
   // Mark gps_state_ as updated by the current parsing pass without publishing
   // immediately. The driver thread fires a single TriggerStateCallback() after
@@ -151,6 +150,14 @@ class GpsDriver : public DebuggableDriver {
   bool stopped_ = true;
 
   void threadFunc();
+
+  // Publishes the current gps_state_ via the state callback. PRIVATE ON PURPOSE:
+  // only threadFunc() may call this, exactly once per ProcessBytes() pass, after
+  // checking state_dirty_. Protocol parsers (NMEA/UBX subclasses) must use
+  // MarkStateDirty() instead and never publish inline -- doing so per sentence
+  // (~50/s) floods the packet pool and times out every service. Keeping this
+  // private makes that regression a compile error.
+  void TriggerStateCallback();
 
   static void threadHelper(void *instance);
 };

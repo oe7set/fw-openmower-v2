@@ -20,6 +20,12 @@ using namespace yfr4esc;
 static constexpr eventmask_t EVT_RX_DMA_WRAP = (1U << 0);    // DMA buffer full/wrap
 static constexpr eventmask_t EVT_RX_CHAR_MATCH = (1U << 1);  // Character match (0x0) received
 
+// Bounded UART transmit timeout. A control/settings frame is tiny, so 100ms is
+// far more than a healthy link needs. A stuck UART must never block the calling
+// thread forever (the previous TIME_INFINITE could freeze the whole node until
+// a power cycle); on timeout the frame is simply dropped.
+static constexpr sysinterval_t YFR4_UART_TX_TIMEOUT = TIME_MS2I(100);
+
 bool YFR4escDriver::SetUART(UARTDriver* uart, uint32_t baudrate) {
   chDbgAssert(!IsStarted(), "Only set UART when the driver is stopped");
   chDbgAssert(uart != nullptr, "need to provide a driver");
@@ -138,7 +144,7 @@ void YFR4escDriver::SendControl(float duty) {
     return;
   }
   tx_buffer_[len++] = 0;  // COBS end marker
-  uartSendFullTimeout(uart_, &len, tx_buffer_, TIME_INFINITE);
+  uartSendFullTimeout(uart_, &len, tx_buffer_, YFR4_UART_TX_TIMEOUT);
   chMtxUnlock(&mutex_);
 }
 
@@ -162,7 +168,7 @@ void YFR4escDriver::SendSettings() {
     return;
   }
   tx_buffer_[len++] = 0;  // COBS end marker
-  uartSendFullTimeout(uart_, &len, tx_buffer_, TIME_INFINITE);
+  uartSendFullTimeout(uart_, &len, tx_buffer_, YFR4_UART_TX_TIMEOUT);
   chMtxUnlock(&mutex_);
 }
 
@@ -171,7 +177,7 @@ void YFR4escDriver::RawDataInput(uint8_t* data, size_t size) {
   chMtxLock(&mutex_);
   size_t len = size > TX_BUFFER_SIZE ? TX_BUFFER_SIZE : size;
   memcpy(tx_buffer_, data, len);
-  uartSendFullTimeout(uart_, &len, tx_buffer_, TIME_INFINITE);
+  uartSendFullTimeout(uart_, &len, tx_buffer_, YFR4_UART_TX_TIMEOUT);
   chMtxUnlock(&mutex_);
 }
 

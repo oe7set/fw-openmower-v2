@@ -11,6 +11,15 @@
 static constexpr uint32_t EVT_ID_RECEIVED = 1;
 static constexpr uint32_t EVT_ID_EXPECT_PACKET = 2;
 
+// Bounded UART transmit timeout for VESC packets. A motor command is only a
+// handful of bytes (<1ms on the wire), so 100ms is far more than a healthy link
+// ever needs. The previous TIME_INFINITE meant a stuck/unclocked UART (motor
+// controller hung, cable pulled) would block the calling service thread
+// forever: heartbeats stop, every service times out, and the whole node
+// freezes until a power cycle. With a bounded timeout the send simply fails and
+// the driver keeps running so the watchdogs can react.
+static constexpr sysinterval_t VESC_UART_TX_TIMEOUT = TIME_MS2I(100);
+
 namespace xbot::driver::motor {
 VescDriver::VescDriver() {
   latest_state_.status = ESCState::ESCStatus::ESC_STATUS_DISCONNECTED;
@@ -176,7 +185,11 @@ void VescDriver::SendPacket() {
   payload_buffer_.payload[payload_buffer_.payload_length + 1] = static_cast<uint8_t>(crcPayload & 0xFF);
   payload_buffer_.payload[payload_buffer_.payload_length + 2] = 3;
   size_t total_size = payload_buffer_.payload_length + 5;
-  uartSendFullTimeout(uart_, &total_size, &payload_buffer_.prepend[3], TIME_INFINITE);
+  // Bounded send: never block the service thread forever on a stuck UART.
+  // total_size is updated to the number of bytes actually sent; on timeout the
+  // packet is simply dropped. RequestStatus()/RawDataInput() already tolerate
+  // missing responses, and SetDuty() is re-sent on the next tick.
+  uartSendFullTimeout(uart_, &total_size, &payload_buffer_.prepend[3], VESC_UART_TX_TIMEOUT);
 }
 
 void VescDriver::RequestStatus() {
@@ -217,7 +230,9 @@ void VescDriver::RawDataInput(uint8_t* data, size_t size) {
   }
   // Lock mutex so that during transmission we don't start a second one
   chMtxLock(&mutex_);
-  uartSendFullTimeout(uart_, &size, data, TIME_INFINITE);
+  // Bounded send (see SendPacket): a stuck UART must not block this thread
+  // forever. On timeout the raw chunk is dropped.
+  uartSendFullTimeout(uart_, &size, data, VESC_UART_TX_TIMEOUT);
   // Signal that we are waiting for a response, so the receiving thread becomes active
   chEvtSignal(processing_thread_, EVT_ID_EXPECT_PACKET);
   chMtxUnlock(&mutex_);

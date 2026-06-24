@@ -28,6 +28,32 @@ bool Input::Update(bool new_active, uint32_t predate) {
   return false;
 }
 
+bool Input::UpdateDebounced(bool raw_active, uint8_t required_samples, uint32_t predate) {
+  if (required_samples <= 1) {
+    // No filtering requested; behave like a plain Update().
+    return Update(raw_active, predate);
+  }
+
+  // Count consecutive agreeing raw samples. We filter on the raw level (before
+  // the invert applied inside Update()), which is fine: we only need the
+  // electrical reading to be stable, not its logical meaning.
+  if (raw_active != debounce_candidate_) {
+    // Level changed vs. the candidate we were counting: restart the count.
+    debounce_candidate_ = raw_active;
+    debounce_count_ = 1;
+  } else if (debounce_count_ < required_samples) {
+    debounce_count_++;
+  }
+
+  if (debounce_count_ >= required_samples) {
+    // The candidate level has been stable long enough; accept it. Update()
+    // itself only fires on an actual edge, so repeated stable samples are
+    // cheap no-ops.
+    return Update(raw_active, predate);
+  }
+  return false;
+}
+
 bool Input::GetAndClearPendingEmergency() {
   bool only_if_pending = true;
   return emergency_pending.compare_exchange_strong(only_if_pending, false);

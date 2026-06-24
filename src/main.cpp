@@ -24,6 +24,7 @@
 #include "id_eeprom.h"
 #include "services.hpp"
 #include "status_led.h"
+#include "watchdog.h"
 
 static void DispatchEvents();
 
@@ -124,6 +125,11 @@ int main() {
   xbot::service::Io::start();
   StartServices();
   SetStatusLedColor(GREEN);
+  // Arm the software watchdog only after boot is complete (filesystem mounted,
+  // platform initialized, services started). Arming this late means the slow
+  // one-off boot steps (FS mount, DHCP) can never trip it; it only guards the
+  // steady-state run loop.
+  InitWatchdog();
   DispatchEvents();
 }
 

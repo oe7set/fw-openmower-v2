@@ -45,6 +45,15 @@ struct Input {
   }
 
   bool Update(bool new_active, uint32_t predate = 0);
+
+  // Glitch-filtered variant for periodically-sampled inputs (e.g. the Sabo
+  // sensor tick). A raw reading must repeat for `required_samples` consecutive
+  // calls before it is accepted and forwarded to Update(). This rejects
+  // single-sample spikes caused by motor EMI on the sensor lines, which would
+  // otherwise trip a spurious lift/stop emergency. Returns the result of the
+  // underlying Update() when the state is accepted, false otherwise.
+  bool UpdateDebounced(bool raw_active, uint8_t required_samples, uint32_t predate = 0);
+
   bool GetAndClearPendingEmergency();
 
   void InjectPress(bool long_press = false);
@@ -59,6 +68,12 @@ struct Input {
   etl::atomic<bool> emergency_pending{false};
   uint32_t active_since{0};
   Input* next_for_driver_{nullptr};
+
+  // State for UpdateDebounced(): the candidate raw level being counted and how
+  // many consecutive samples have agreed with it so far. Only touched from the
+  // sampling thread, so no atomics needed.
+  bool debounce_candidate_{false};
+  uint8_t debounce_count_{0};
 
   friend class InputDriver;
   friend struct InputIterable;

@@ -84,6 +84,24 @@ class SaboInputDriver : public InputDriver {
   static constexpr systime_t HEARTBEAT_CHECK_INTERVAL = TIME_MS2I(200);  // 200ms interval
   virtual_timer_t heartbeat_timer_;  // Independent continuous timer for heartbeat monitoring
 
+  // Hysteresis for the STOP_REAR heartbeat. Reading the raw pulse count
+  // (heartbeat_last_ < heartbeat_min_) directly caused spurious emergency stops:
+  // when the pulse rate sits near the threshold, normal jitter makes a single
+  // 200ms window dip below heartbeat_min_ even though the stop bar is not
+  // pressed. We therefore require HEARTBEAT_STOP_WINDOWS consecutive
+  // sub-threshold windows before reporting STOP. heartbeat_low_windows_ starts
+  // saturated so the sensor reads STOPPED (fail-safe) until a first good window
+  // is measured, and a genuine stop press is still detected within
+  // HEARTBEAT_STOP_WINDOWS * 200ms.
+  static constexpr uint8_t HEARTBEAT_STOP_WINDOWS = 2;
+  uint8_t heartbeat_low_windows_ = HEARTBEAT_STOP_WINDOWS;  // consecutive windows below threshold
+  volatile bool heartbeat_stopped_ = true;                 // debounced STOP state (written in timer ISR)
+
+  // Consecutive agreeing samples required before a sensor state change is
+  // accepted (see Tick / Input::UpdateDebounced). Tick runs every 20ms, so 3
+  // samples ~= 60ms of glitch rejection.
+  static constexpr uint8_t SENSOR_DEBOUNCE_SAMPLES = 3;
+
   // Button blocking for not sending button inputs during InputScreen button testing
   bool block_buttons_ = false;
 

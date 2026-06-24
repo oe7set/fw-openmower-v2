@@ -28,8 +28,12 @@ void MowerService::OnStop() {
 void MowerService::tick() {
   chMtxLock(&mtx);
 
-  // Check, if we recently received duty. If not, set to zero for safety
-  if (xbot::service::system::getTimeMicros() - last_duty_received_micros_ > 10'000'000) {
+  // Check, if we recently received a mower-enabled refresh. If not, set the
+  // blade duty to zero for safety. The high level refreshes the latched
+  // mower-enabled state at 1 Hz, so a 3 s window tolerates two consecutive
+  // missed refreshes while still stopping the blade promptly when the high
+  // level dies. (The emergency path stops the blade even faster.)
+  if (xbot::service::system::getTimeMicros() - last_duty_received_micros_ > 3'000'000) {
     // it's ok to set it here, because we know that duty_set_ is false (we're in a timeout after all)
     mower_duty_ = 0;
   }
